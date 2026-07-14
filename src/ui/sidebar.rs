@@ -436,9 +436,8 @@ pub fn search_hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<SearchHit
 }
 
 /// Type of a scrollable content row in the Git panel.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum GitRowKind {
-    Branch,
     StagedHeader,
     ChangesHeader,
     /// "Unstage All -" row (under the staged header).
@@ -447,9 +446,42 @@ pub enum GitRowKind {
     StageAll,
     /// Separator line between the action row and the file list.
     Separator,
-    Staged(usize),
-    Unstaged(usize),
+    /// A directory node in the change tree (display only, not selectable).
+    Dir { name: String, depth: usize },
+    /// A staged file: `idx` into `staged`, `depth` in the tree.
+    Staged { idx: usize, depth: usize },
+    /// An unstaged file: `idx` into `unstaged`, `depth` in the tree.
+    Unstaged { idx: usize, depth: usize },
     Info(&'static str),
+}
+
+/// Emits tree rows (directory headers + file rows) for one section's entries,
+/// grouping by path like the file explorer. `make_row` builds the file row
+/// (`Staged`/`Unstaged`) from an entry index + its tree depth.
+fn tree_rows(
+    entries: &[GitEntry],
+    make_row: impl Fn(usize, usize) -> GitRowKind,
+    rows: &mut Vec<GitRowKind>,
+) {
+    // Sort entry indices by path so shared directories are contiguous.
+    let mut order: Vec<usize> = (0..entries.len()).collect();
+    order.sort_by(|&a, &b| entries[a].rel.cmp(&entries[b].rel));
+
+    let mut prev: Vec<&str> = Vec::new();
+    for &i in &order {
+        let parts: Vec<&str> = entries[i].rel.split('/').collect();
+        let dirs = &parts[..parts.len() - 1];
+        // Emit directory headers for components not shared with the previous row.
+        let mut common = 0;
+        while common < dirs.len() && common < prev.len() && dirs[common] == prev[common] {
+            common += 1;
+        }
+        for (d, name) in dirs.iter().enumerate().skip(common) {
+            rows.push(GitRowKind::Dir { name: name.to_string(), depth: d });
+        }
+        rows.push(make_row(i, dirs.len()));
+        prev = dirs.to_vec();
+    }
 }
 
 /// Height of the commit message box (rows).
@@ -458,63 +490,67 @@ const COMMIT_INPUT_H: u16 = 4;
 /// The Git panel layout computed once; shared by render and mouse hit-testing.
 pub struct GitLayout {
     pub rows: Vec<GitRowKind>,
-    /// y of the first content row (below the title row).
+    /// y of the branch row at the top (only meaningful when `branch_shown`).
+    pub branch_y: u16,
+    /// Whether the branch row is drawn.
+    pub branch_shown: bool,
+    /// y of the first scrollable change row (below the commit block).
     pub content_y: u16,
     /// Scrollable list height.
     pub list_h: u16,
     pub offset: usize,
-    /// y of the fetch/pull/push button row (just above the commit box).
+    /// y of the fetch/pull/push button row (bottom footer).
     pub actions_y: u16,
-    /// y of the commit box separator row.
-    pub sep_y: u16,
     /// Top y of the commit message input field (height `COMMIT_INPUT_H`).
     pub input_top: u16,
-    /// y of the commit button row (a blank row is left below it).
+    /// y of the commit button row.
     pub button_y: u16,
     /// Whether the commit box is shown (whether a repo exists).
     pub has_box: bool,
 }
 
 /// Computes the Git panel layout. `area` is the full sidebar area (title included).
+///
+/// Top→bottom: branch row, blank, commit input box, commit button, blank, then
+/// the scrollable change list. The fetch/pull/push row sits at the very bottom.
 pub fn git_layout(model: &Model, area: Rect) -> GitLayout {
     let g = &model.sidebar.git;
     let mut rows = Vec::new();
     if !g.is_repo {
         rows.push(GitRowKind::Info("No git repository"));
     } else {
-        if g.branch.is_some() {
-            rows.push(GitRowKind::Branch);
-        }
         if !g.staged.is_empty() {
             rows.push(GitRowKind::StagedHeader);
             rows.push(GitRowKind::UnstageAll);
             rows.push(GitRowKind::Separator);
-            rows.extend((0..g.staged.len()).map(GitRowKind::Staged));
+            tree_rows(&g.staged, |idx, depth| GitRowKind::Staged { idx, depth }, &mut rows);
         }
         if !g.unstaged.is_empty() {
             rows.push(GitRowKind::ChangesHeader);
             rows.push(GitRowKind::StageAll);
             rows.push(GitRowKind::Separator);
-            rows.extend((0..g.unstaged.len()).map(GitRowKind::Unstaged));
+            tree_rows(&g.unstaged, |idx, depth| GitRowKind::Unstaged { idx, depth }, &mut rows);
         }
         if g.staged.is_empty() && g.unstaged.is_empty() {
             rows.push(GitRowKind::Info("No changes"));
         }
     }
 
-    let content_y = area.y + 1;
     let has_box = g.is_repo;
-    // Commit box at the bottom (top→bottom): fetch/pull/push row, separator,
-    // 4 input rows, commit button, blank.
-    let bottom = area.y + area.height.saturating_sub(1); // blank row
-    let button_y = bottom.saturating_sub(1);
-    let input_top = button_y.saturating_sub(COMMIT_INPUT_H);
-    let sep_y = input_top.saturating_sub(1);
-    let actions_y = sep_y.saturating_sub(1);
-    let list_h = if has_box {
-        actions_y.saturating_sub(content_y)
+    let top = area.y + 1;
+    let branch_shown = g.is_repo && g.branch.is_some();
+    let branch_y = top;
+
+    // Fixed top block (only with a repo): branch, blank, input box, button, blank.
+    let (content_y, input_top, button_y, actions_y, list_h) = if has_box {
+        let input_top = top + if branch_shown { 1 } else { 0 } + 1; // branch + blank
+        let button_y = input_top + COMMIT_INPUT_H;
+        let content_y = button_y + 2; // blank, then the change list
+        let actions_y = area.y + area.height.saturating_sub(1); // bottom footer
+        let list_h = actions_y.saturating_sub(content_y);
+        (content_y, input_top, button_y, actions_y, list_h)
     } else {
-        area.height.saturating_sub(1)
+        (top, 0, 0, 0, area.height.saturating_sub(1))
     };
 
     let sel_pos = selected_row_pos(g, &rows);
@@ -522,11 +558,12 @@ pub fn git_layout(model: &Model, area: Rect) -> GitLayout {
 
     GitLayout {
         rows,
+        branch_y,
+        branch_shown,
         content_y,
         list_h,
         offset,
         actions_y,
-        sep_y,
         input_top,
         button_y,
         has_box,
@@ -577,8 +614,8 @@ fn selected_row_pos(g: &GitStatus, rows: &[GitRowKind]) -> usize {
     };
     for (pos, r) in rows.iter().enumerate() {
         match r {
-            GitRowKind::Staged(i) if want_staged && *i == want_idx => return pos,
-            GitRowKind::Unstaged(i) if !want_staged && *i == want_idx => return pos,
+            GitRowKind::Staged { idx, .. } if want_staged && *idx == want_idx => return pos,
+            GitRowKind::Unstaged { idx, .. } if !want_staged && *idx == want_idx => return pos,
             _ => {}
         }
     }
@@ -588,7 +625,19 @@ fn selected_row_pos(g: &GitStatus, rows: &[GitRowKind]) -> usize {
 fn render_git(frame: &mut Frame, area: Rect, model: &Model) {
     let l = git_layout(model, area);
     let width = area.width as usize;
+    let th = &model.theme;
 
+    // Branch row at the very top.
+    if l.branch_shown {
+        let branch = Paragraph::new(Line::from(Span::styled(
+            format!(" ⎇ {}", model.sidebar.git.branch.clone().unwrap_or_default()),
+            Style::new().fg(th.accent).add_modifier(Modifier::BOLD),
+        )))
+        .style(Style::new().bg(th.bg_alt));
+        frame.render_widget(branch, Rect { y: l.branch_y, height: 1, ..area });
+    }
+
+    // Scrollable change list.
     let mut lines: Vec<Line> = Vec::new();
     for r in l.rows.iter().skip(l.offset).take(l.list_h as usize) {
         lines.push(git_row_line(model, r, width));
@@ -598,16 +647,16 @@ fn render_git(frame: &mut Frame, area: Rect, model: &Model) {
         height: l.list_h,
         ..area
     };
-    let p = Paragraph::new(lines).style(Style::new().bg(model.theme.bg_alt));
+    let p = Paragraph::new(lines).style(Style::new().bg(th.bg_alt));
     frame.render_widget(p, list_area);
 
     if l.has_box {
-        render_git_actions(frame, area, &l, model, width);
         render_commit_box(frame, area, &l, model, width);
+        render_git_actions(frame, area, &l, model, width);
     }
 }
 
-/// The fetch / pull / push button row above the commit box.
+/// The fetch / pull / push button row at the bottom of the panel.
 fn render_git_actions(frame: &mut Frame, area: Rect, l: &GitLayout, model: &Model, width: usize) {
     let th = &model.theme;
     let g = &model.sidebar.git;
@@ -660,10 +709,6 @@ fn git_row_line(model: &Model, kind: &GitRowKind, width: usize) -> Line<'static>
     let g = &model.sidebar.git;
     let th = &model.theme;
     match kind {
-        GitRowKind::Branch => Line::from(Span::styled(
-            format!(" ⎇ {}", g.branch.clone().unwrap_or_default()),
-            Style::new().fg(th.accent).add_modifier(Modifier::BOLD),
-        )),
         GitRowKind::StagedHeader => header_line(format!(" STAGED ({})", g.staged.len()), th),
         GitRowKind::ChangesHeader => {
             header_line(format!(" CHANGES ({})", g.unstaged.len()), th)
@@ -678,13 +723,19 @@ fn git_row_line(model: &Model, kind: &GitRowKind, width: usize) -> Line<'static>
             Style::new().fg(th.border),
         ))
         .style(Style::new().bg(th.bg_alt)),
-        GitRowKind::Staged(i) => {
-            let sel = model.focus == Focus::Sidebar && g.selected == *i;
-            entry_line(model, &g.staged[*i], true, sel, width)
+        GitRowKind::Dir { name, depth } => Line::from(vec![
+            Span::raw("  ".repeat(*depth)),
+            Span::styled("▾ ", Style::new().fg(th.fg_dim)),
+            Span::styled(name.clone(), Style::new().fg(th.fg)),
+        ])
+        .style(Style::new().bg(th.bg_alt)),
+        GitRowKind::Staged { idx, depth } => {
+            let sel = model.focus == Focus::Sidebar && g.selected == *idx;
+            entry_line(model, &g.staged[*idx], true, sel, *depth, width)
         }
-        GitRowKind::Unstaged(i) => {
-            let sel = model.focus == Focus::Sidebar && g.selected == g.staged.len() + *i;
-            entry_line(model, &g.unstaged[*i], false, sel, width)
+        GitRowKind::Unstaged { idx, depth } => {
+            let sel = model.focus == Focus::Sidebar && g.selected == g.staged.len() + *idx;
+            entry_line(model, &g.unstaged[*idx], false, sel, *depth, width)
         }
     }
 }
@@ -716,12 +767,15 @@ fn header_line(text: String, th: &crate::core::theme::Theme) -> Line<'static> {
     .style(Style::new().bg(th.bg_alt))
 }
 
-/// A git change row: `[ M path            + ↺]` (unstaged) / `[ M path   -]` (staged).
+/// A git change row shown in the tree: `[<indent> M name       + ↺]` (unstaged) /
+/// `[<indent> M name   -]` (staged). Only the file name is drawn; the directory
+/// path is conveyed by the tree indent and parent `Dir` rows.
 fn entry_line(
     model: &Model,
     e: &GitEntry,
     staged: bool,
     selected: bool,
+    depth: usize,
     width: usize,
 ) -> Line<'static> {
     let th = &model.theme;
@@ -732,15 +786,17 @@ fn entry_line(
         GitState::Untracked => th.git_untracked,
         _ => th.fg_dim,
     };
-    // prefix (3) + path + suffix (4) = width
-    let avail = width.saturating_sub(7);
-    let path = fit_path(&e.rel, avail);
-    let path_field = format!("{path:<avail$}");
+    let indent = "  ".repeat(depth);
+    let name = e.rel.rsplit('/').next().unwrap_or(e.rel.as_str());
+    // indent + prefix (3) + name + suffix (4) = width
+    let avail = width.saturating_sub(indent.len() + 7);
+    let name_field = format!("{:<avail$}", fit_path(name, avail));
     let line_bg = if selected { th.selection } else { th.bg_alt };
 
     let mut spans = vec![
+        Span::raw(indent),
         Span::styled(format!(" {} ", e.state.short()), Style::new().fg(color)),
-        Span::styled(path_field, Style::new().fg(th.fg)),
+        Span::styled(name_field, Style::new().fg(th.fg)),
     ];
     if staged {
         // Last 4 columns: "  - " → unstage button at width-2.
@@ -771,40 +827,45 @@ fn fit_path(rel: &str, max: usize) -> String {
     format!("…{tail}")
 }
 
-/// The commit message box at the bottom (4 rows) and the commit button.
+/// The commit message box (4 rows) and the commit button, below the branch row.
 fn render_commit_box(frame: &mut Frame, area: Rect, l: &GitLayout, model: &Model, width: usize) {
     let th = &model.theme;
     let g = &model.sidebar.git;
     let focused = model.focus == Focus::GitCommit;
 
-    // Separator row.
-    let sep = Paragraph::new(Line::from(Span::styled(
-        "─".repeat(width),
-        Style::new().fg(th.border),
-    )))
-    .style(Style::new().bg(th.bg_alt));
-    frame.render_widget(sep, Rect { y: l.sep_y, height: 1, ..area });
-
-    // Input field (multi-line, wraps). Always on a darker (sunken) background.
+    // Input field (multi-line: Enter splits `commit_msg` into rows). Always on a
+    // darker (sunken) background.
     let input_bg = th.input_bg();
+    let caret = || {
+        Span::styled(
+            "█",
+            Style::new()
+                .fg(th.accent)
+                .bg(input_bg)
+                .add_modifier(Modifier::SLOW_BLINK),
+        )
+    };
     let input = if g.commit_msg.is_empty() && !focused {
-        Paragraph::new(" Message (⏎ to commit)")
-            .style(Style::new().fg(th.fg_dim).bg(input_bg))
+        Paragraph::new(" Message").style(Style::new().fg(th.fg_dim).bg(input_bg))
     } else {
-        let mut spans = vec![Span::styled(
-            format!(" {}", g.commit_msg),
-            Style::new().fg(th.fg).bg(input_bg),
-        )];
-        if focused {
-            spans.push(Span::styled(
-                "█",
-                Style::new()
-                    .fg(th.accent)
-                    .bg(input_bg)
-                    .add_modifier(Modifier::SLOW_BLINK),
-            ));
-        }
-        Paragraph::new(Line::from(spans))
+        // One display row per '\n'; the blinking caret sits at the end of the last.
+        let msg_lines: Vec<&str> = g.commit_msg.split('\n').collect();
+        let last = msg_lines.len() - 1;
+        let lines: Vec<Line> = msg_lines
+            .iter()
+            .enumerate()
+            .map(|(i, seg)| {
+                let mut spans = vec![Span::styled(
+                    format!(" {seg}"),
+                    Style::new().fg(th.fg).bg(input_bg),
+                )];
+                if focused && i == last {
+                    spans.push(caret());
+                }
+                Line::from(spans)
+            })
+            .collect();
+        Paragraph::new(lines)
             .style(Style::new().bg(input_bg))
             .wrap(Wrap { trim: false })
     };
@@ -818,11 +879,7 @@ fn render_commit_box(frame: &mut Frame, area: Rect, l: &GitLayout, model: &Model
     );
 
     // Commit button.
-    let label = if model.ascii_icons {
-        " Commit "
-    } else {
-        " ✓ Commit "
-    };
+    let label = " Commit ";
     let can_commit = !g.staged.is_empty() && !g.commit_msg.trim().is_empty();
     let btn_bg = if can_commit { th.accent } else { th.tab_inactive_bg };
     let btn = Paragraph::new(Line::from(Span::styled(
@@ -881,25 +938,25 @@ pub fn git_hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<GitHit> {
     let width = area.width as usize;
     let wide = width >= 8;
     match kind {
-        GitRowKind::Staged(i) => {
-            let e = g.staged.get(*i)?;
+        GitRowKind::Staged { idx, .. } => {
+            let e = g.staged.get(*idx)?;
             if wide && col >= width - 2 {
                 Some(GitHit::Unstage(e.rel.clone()))
             } else {
-                Some(GitHit::Entry(*i))
+                Some(GitHit::Entry(*idx))
             }
         }
         GitRowKind::StageAll => Some(GitHit::StageAll),
         GitRowKind::UnstageAll => Some(GitHit::UnstageAll),
-        GitRowKind::Unstaged(i) => {
-            let e = g.unstaged.get(*i)?;
+        GitRowKind::Unstaged { idx, .. } => {
+            let e = g.unstaged.get(*idx)?;
             // Last 4 columns: revert (width-4) · space · stage (width-2).
             if wide && col >= width - 2 {
                 Some(GitHit::Stage(e.rel.clone()))
             } else if wide && col >= width - 4 {
                 Some(GitHit::Revert(e.rel.clone()))
             } else {
-                Some(GitHit::Entry(g.staged.len() + *i))
+                Some(GitHit::Entry(g.staged.len() + *idx))
             }
         }
         _ => None,

@@ -183,7 +183,11 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
             model.sidebar.git.commit_msg.pop();
             Vec::new()
         }
-        Action::GitCommitSubmit => git_commit(model),
+        // Enter inserts a newline (multi-line messages); committing is button-only.
+        Action::GitCommitSubmit => {
+            model.sidebar.git.commit_msg.push('\n');
+            Vec::new()
+        }
 
         // ----- In-editor find / replace -----
         Action::OpenFind => open_find(model, false),

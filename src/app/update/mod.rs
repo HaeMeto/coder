@@ -76,17 +76,22 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             if model.pending_diff.as_deref() == Some(path.as_path()) {
                 tab.diff_mode = true;
                 model.pending_diff = None;
+                // Scroll to the first change once HEAD text arrives (marks need it).
+                model.pending_diff_scroll = Some(path.clone());
             }
             model.tabs.push(tab);
             model.active_tab = Some(model.tabs.len() - 1);
             model.focus = Focus::Editor;
-            // Apply a pending goto if there is one.
-            if let Some((gp, line)) = model.pending_goto.take()
-                && gp == path
-                    && let Some(buf) = model.active_buffer_mut() {
-                        buf.goto_line(line);
-                    }
-            ensure_cursor_visible(model);
+            // Apply a pending goto if there is one (from a search result): center it.
+            let goto = model.pending_goto.take().filter(|(gp, _)| *gp == path);
+            if let Some((_, line)) = goto {
+                if let Some(buf) = model.active_buffer_mut() {
+                    buf.goto_line(line);
+                }
+                center_cursor_in_view(model);
+            } else {
+                ensure_cursor_visible(model);
+            }
             // Load the HEAD content for the change gutter.
             vec![Cmd::LoadHeadText(path)]
         }
@@ -96,6 +101,19 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                 model.tabs[i].head_text = text.clone();
                 if model.active_tab == Some(i) {
                     model.invalidate_highlight();
+                }
+            }
+            // First open of a diff tab: jump the cursor to the first changed line so
+            // the diff is on screen without scrolling.
+            if model.pending_diff_scroll.as_deref() == Some(path.as_path()) {
+                model.pending_diff_scroll = None;
+                model.refresh_git_marks();
+                if let Some(first) = model.active_git_marks.keys().min().copied() {
+                    if let Some(buf) = model.active_buffer_mut() {
+                        buf.goto_line(first);
+                    }
+                    // Put the first change at the top, not the bottom of the viewport.
+                    scroll_cursor_to_top(model);
                 }
             }
             Vec::new()

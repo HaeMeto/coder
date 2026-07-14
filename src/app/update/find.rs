@@ -67,7 +67,8 @@ fn find_select_current(model: &mut Model) {
     if let Some(buf) = model.active_buffer_mut() {
         buf.select_char_range(s, e);
     }
-    ensure_cursor_visible(model);
+    // Center the found match in the viewport.
+    center_cursor_in_view(model);
 }
 
 /// Moves to the next (delta=1) / previous (delta=-1) match, wrapping around.

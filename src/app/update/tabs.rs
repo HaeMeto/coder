@@ -80,8 +80,11 @@ pub(super) fn open_path_at(model: &mut Model, path: PathBuf, line: usize) -> Vec
         model.focus = Focus::Editor;
         if line > 0 {
             model.tabs[i].buffer.goto_line(line);
+            // Center the match (opened from a search result / goto).
+            center_cursor_in_view(model);
+        } else {
+            ensure_cursor_visible(model);
         }
-        ensure_cursor_visible(model);
         Vec::new()
     } else {
         if line > 0 {

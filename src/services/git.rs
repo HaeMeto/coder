@@ -352,6 +352,53 @@ pub fn gutter_marks(old: &str, new: &str) -> Vec<(usize, GutterKind)> {
     marks.into_iter().collect()
 }
 
+/// Removed line blocks for an inline diff view. Each entry is `(anchor, lines)`:
+/// the removed `lines` render right after buffer line `anchor` (`None` = before
+/// the first line). Includes the old side of modifications so replaced code is
+/// shown alongside the new lines. Pure (no IO).
+pub fn deleted_blocks(old: &str, new: &str) -> Vec<(Option<usize>, Vec<String>)> {
+    let mut opts = git2::DiffOptions::new();
+    opts.context_lines(0);
+    let patch = match git2::Patch::from_buffers(
+        old.as_bytes(),
+        None,
+        new.as_bytes(),
+        None,
+        Some(&mut opts),
+    ) {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    let old_lines: Vec<&str> = old.lines().collect();
+    let mut out = Vec::new();
+    for h in 0..patch.num_hunks() {
+        let Ok((hunk, _)) = patch.hunk(h) else { continue };
+        let ol = hunk.old_lines() as usize;
+        if ol == 0 {
+            continue; // pure addition — nothing removed
+        }
+        let os = hunk.old_start() as usize; // 1-based
+        let removed: Vec<String> = (0..ol)
+            .filter_map(|i| old_lines.get(os - 1 + i).map(|s| s.to_string()))
+            .collect();
+        if removed.is_empty() {
+            continue;
+        }
+        let nl = hunk.new_lines() as usize;
+        let ns = hunk.new_start() as usize; // 1-based
+        let anchor = if nl > 0 {
+            // Render right before the first new (added/modified) line.
+            let first_new0 = ns.saturating_sub(1); // 0-based first new line
+            if first_new0 == 0 { None } else { Some(first_new0 - 1) }
+        } else {
+            // Pure deletion: right after the line the removal follows.
+            if ns == 0 { None } else { Some(ns - 1) }
+        };
+        out.push((anchor, removed));
+    }
+    out
+}
+
 /// Commits the changes in the index.
 pub fn commit(root: &Path, message: &str) -> Result<(), git2::Error> {
     let repo = Repository::discover(root)?;
@@ -405,5 +452,30 @@ mod tests {
     #[test]
     fn no_changes_no_marks() {
         assert!(kinds("a\nb\n", "a\nb\n").is_empty());
+    }
+
+    #[test]
+    fn deleted_block_after_anchor_line() {
+        // Remove "b" -> shown right after line 0 ("a").
+        let d = deleted_blocks("a\nb\nc\n", "a\nc\n");
+        assert_eq!(d, vec![(Some(0), vec!["b".to_string()])]);
+    }
+
+    #[test]
+    fn modification_shows_old_line() {
+        // "b" -> "B": the old "b" is a removed row before the new "B".
+        let d = deleted_blocks("a\nb\nc\n", "a\nB\nc\n");
+        assert_eq!(d, vec![(Some(0), vec!["b".to_string()])]);
+    }
+
+    #[test]
+    fn deletion_at_top_anchors_before_first_line() {
+        let d = deleted_blocks("a\nb\n", "b\n");
+        assert_eq!(d, vec![(None, vec!["a".to_string()])]);
+    }
+
+    #[test]
+    fn pure_addition_has_no_deleted_blocks() {
+        assert!(deleted_blocks("a\nb\n", "a\nx\nb\n").is_empty());
     }
 }

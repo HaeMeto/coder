@@ -49,8 +49,8 @@ pub(super) fn handle_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
                     sync_terminal_size(model);
                 }
                 Some(DragTarget::EditorSelect) => {
+                    let c = editor_cursor_at(model, &a, x, y);
                     if let Some(buf) = model.active_buffer_mut() {
-                        let c = editor_cursor_at(buf, &a, x, y);
                         buf.set_cursor(c, true); // anchor is kept -> the selection grows
                     }
                     ensure_cursor_visible(model);
@@ -151,14 +151,12 @@ fn mouse_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
             .map(|(t, cx, cy)| cx == x && cy == y && now.duration_since(t).as_millis() < 400)
             .unwrap_or(false);
         model.last_click = Some((now, x, y));
+        let cur = editor_cursor_at(model, a, x, y);
         if let Some(buf) = model.active_buffer_mut() {
-            let line = buf.scroll_y + (y - a.editor.y) as usize;
-            let col_vis = x.saturating_sub(a.editor_text_x) as usize;
-            let col = buf.scroll_x + col_vis;
             if double {
-                buf.select_word_at(Cursor { line, col });
+                buf.select_word_at(cur);
             } else {
-                buf.set_cursor(Cursor { line, col }, false);
+                buf.set_cursor(cur, false);
             }
         }
         // A single click starts a drag selection; a double-click keeps the word.
@@ -171,12 +169,15 @@ fn mouse_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
     Vec::new()
 }
 
-/// Converts a mouse position to an editor (line, column) cursor.
-fn editor_cursor_at(buf: &Buffer, a: &ui::Areas, x: u16, y: u16) -> Cursor {
+/// Converts a mouse position to an editor (line, column) cursor. Maps the screen
+/// row through the diff view so clicks land on the right buffer line even when
+/// removed lines are woven in.
+fn editor_cursor_at(model: &Model, a: &ui::Areas, x: u16, y: u16) -> Cursor {
     // Clamp y to the editor area (drift when dragging past the top/bottom edge).
     let ey = y.clamp(a.editor.y, a.editor.y + a.editor.height.saturating_sub(1));
-    let line = buf.scroll_y + (ey - a.editor.y) as usize;
-    let col = buf.scroll_x + x.saturating_sub(a.editor_text_x) as usize;
+    let line = model.screen_row_to_line((ey - a.editor.y) as usize);
+    let scroll_x = model.active_buffer().map(|b| b.scroll_x).unwrap_or(0);
+    let col = scroll_x + x.saturating_sub(a.editor_text_x) as usize;
     Cursor { line, col }
 }
 

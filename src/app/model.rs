@@ -458,16 +458,32 @@ pub struct Model {
     pub pending_goto: Option<(PathBuf, usize)>,
     /// A file whose next load should become a diff-mode tab (opened from the Git panel).
     pub pending_diff: Option<PathBuf>,
+    /// A just-opened diff tab that should scroll to its first change once HEAD loads.
+    pub pending_diff_scroll: Option<PathBuf>,
     /// The open modal dialog (captures all input when present).
     pub dialog: Option<Dialog>,
     /// Change-gutter markers for the active buffer, keyed by line index.
     pub active_git_marks: std::collections::HashMap<usize, GutterKind>,
     /// The (tab index, buffer version) that active_git_marks belongs to.
     active_git_marks_key: Option<(usize, u64)>,
+    /// Removed line blocks for the active diff tab's inline view: `(anchor, lines)`
+    /// renders `lines` right after buffer line `anchor` (`None` = before line 0).
+    /// Empty unless the active tab is a diff tab. Recomputed with `active_git_marks`.
+    pub active_deleted: Vec<(Option<usize>, Vec<String>)>,
     /// In-editor find / replace widget state.
     pub find: FindState,
     /// Last left-click (time, column, row) for editor double-click detection.
     pub last_click: Option<(std::time::Instant, u16, u16)>,
+}
+
+/// One visual row of the editor. In a diff tab, removed lines are woven in as
+/// `Deleted` rows between the real buffer lines; every other tab is all `Real`.
+#[derive(Clone)]
+pub enum DiffRow {
+    /// A real buffer line (0-based index).
+    Real(usize),
+    /// A removed line's text (shown red, not part of the buffer).
+    Deleted(String),
 }
 
 impl Model {
@@ -505,9 +521,11 @@ impl Model {
             active_hl_key: None,
             pending_goto: None,
             pending_diff: None,
+            pending_diff_scroll: None,
             dialog: None,
             active_git_marks: std::collections::HashMap::new(),
             active_git_marks_key: None,
+            active_deleted: Vec::new(),
             find: FindState::default(),
             last_click: None,
             root,
@@ -543,10 +561,16 @@ impl Model {
                 let ver = self.tabs[i].buffer.version;
                 if self.active_git_marks_key != Some((i, ver)) {
                     self.active_git_marks.clear();
+                    self.active_deleted.clear();
                     if let Some(head) = self.tabs[i].head_text.clone() {
                         let new = self.tabs[i].buffer.full_text();
                         for (ln, kind) in crate::services::git::gutter_marks(&head, &new) {
                             self.active_git_marks.insert(ln, kind);
+                        }
+                        // Removed lines are only woven into the inline diff view.
+                        if self.tabs[i].diff_mode {
+                            self.active_deleted =
+                                crate::services::git::deleted_blocks(&head, &new);
                         }
                     }
                     self.active_git_marks_key = Some((i, ver));
@@ -554,9 +578,80 @@ impl Model {
             }
             None => {
                 self.active_git_marks.clear();
+                self.active_deleted.clear();
                 self.active_git_marks_key = None;
             }
         }
+    }
+
+    /// Whether the active tab weaves removed lines into its view (diff tab with deletions).
+    pub fn has_inline_deletions(&self) -> bool {
+        self.active_is_diff() && !self.active_deleted.is_empty()
+    }
+
+    /// The visual rows for the active tab: `Real(0..n)` normally, or real lines
+    /// interleaved with `Deleted` rows in a diff tab that has removals.
+    pub fn diff_rows(&self) -> Vec<DiffRow> {
+        let Some(i) = self.active_tab else {
+            return Vec::new();
+        };
+        let n = self.tabs[i].buffer.line_count();
+        if !self.has_inline_deletions() {
+            return (0..n).map(DiffRow::Real).collect();
+        }
+        let mut rows = Vec::with_capacity(n + self.active_deleted.len());
+        // Removals anchored before the first line.
+        for (anchor, lines) in &self.active_deleted {
+            if anchor.is_none() {
+                rows.extend(lines.iter().cloned().map(DiffRow::Deleted));
+            }
+        }
+        for r in 0..n {
+            rows.push(DiffRow::Real(r));
+            for (anchor, lines) in &self.active_deleted {
+                if *anchor == Some(r) {
+                    rows.extend(lines.iter().cloned().map(DiffRow::Deleted));
+                }
+            }
+        }
+        rows
+    }
+
+    /// Display index of the first row to draw for a given buffer scroll offset.
+    pub fn diff_start(&self, rows: &[DiffRow], scroll_y: usize) -> usize {
+        if scroll_y == 0 {
+            return 0;
+        }
+        rows.iter()
+            .position(|r| matches!(r, DiffRow::Real(l) if *l == scroll_y))
+            .unwrap_or(0)
+    }
+
+    /// Buffer line under a viewport row `offset` (0 = top visible row), mapping
+    /// `Deleted` rows to the nearest following (then preceding) real line.
+    pub fn screen_row_to_line(&self, offset: usize) -> usize {
+        let Some(i) = self.active_tab else {
+            return 0;
+        };
+        let buf = &self.tabs[i].buffer;
+        let last = buf.line_count().saturating_sub(1);
+        if !self.has_inline_deletions() {
+            return (buf.scroll_y + offset).min(last);
+        }
+        let rows = self.diff_rows();
+        let start = self.diff_start(&rows, buf.scroll_y);
+        let idx = (start + offset).min(rows.len().saturating_sub(1));
+        for r in &rows[idx..] {
+            if let DiffRow::Real(l) = r {
+                return *l;
+            }
+        }
+        for r in rows[..=idx].iter().rev() {
+            if let DiffRow::Real(l) = r {
+                return *l;
+            }
+        }
+        last
     }
 
     /// Whether the editor should reserve a change-gutter column (active file is tracked).
