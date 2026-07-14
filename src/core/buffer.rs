@@ -1,0 +1,505 @@
+//! Rope-based text buffer: cursor, selection, undo/redo, dirty flag.
+
+use std::path::PathBuf;
+use std::time::Instant;
+
+use ropey::Rope;
+
+/// A position within the text (line, column) — both 0-based, in character units.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub struct Cursor {
+    pub line: usize,
+    pub col: usize,
+}
+
+/// A single undoable edit: replaces the `before` text with `after` at
+/// position `char_idx`. Undo applies these in reverse.
+#[derive(Clone, Debug)]
+struct Edit {
+    char_idx: usize,
+    before: String,
+    after: String,
+    cursor_before: Cursor,
+    cursor_after: Cursor,
+    /// Time of the last change, used to group consecutive typing.
+    stamp: Instant,
+    /// Is this edit a pure "typing" edit (consecutive character insertion)?
+    typing: bool,
+}
+
+pub struct Buffer {
+    pub path: Option<PathBuf>,
+    pub rope: Rope,
+    pub cursor: Cursor,
+    /// Selection anchor. When `Some`, the range between it and the cursor is selected.
+    pub anchor: Option<Cursor>,
+    /// Topmost visible line of the editor viewport.
+    pub scroll_y: usize,
+    pub scroll_x: usize,
+    pub dirty: bool,
+    /// Version that increments on every edit; used to invalidate the highlight cache.
+    pub version: u64,
+    undo_stack: Vec<Edit>,
+    redo_stack: Vec<Edit>,
+}
+
+impl Buffer {
+    pub fn new(path: Option<PathBuf>, text: &str) -> Self {
+        Buffer {
+            path,
+            rope: Rope::from_str(text),
+            cursor: Cursor::default(),
+            anchor: None,
+            scroll_y: 0,
+            scroll_x: 0,
+            dirty: false,
+            version: 0,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn scratch() -> Self {
+        Buffer::new(None, "")
+    }
+
+    pub fn display_name(&self) -> String {
+        self.path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "untitled".to_string())
+    }
+
+    pub fn line_count(&self) -> usize {
+        self.rope.len_lines().max(1)
+    }
+
+    /// Character length of the given line (excluding the line ending).
+    pub fn line_len(&self, line: usize) -> usize {
+        if line >= self.rope.len_lines() {
+            return 0;
+        }
+        let slice = self.rope.line(line);
+        let mut len = slice.len_chars();
+        // Exclude line-ending characters from the count.
+        while len > 0 {
+            let c = slice.char(len - 1);
+            if c == '\n' || c == '\r' {
+                len -= 1;
+            } else {
+                break;
+            }
+        }
+        len
+    }
+
+    pub fn line_text(&self, line: usize) -> String {
+        if line >= self.rope.len_lines() {
+            return String::new();
+        }
+        let slice = self.rope.line(line);
+        let mut s: String = slice.chars().collect();
+        while s.ends_with('\n') || s.ends_with('\r') {
+            s.pop();
+        }
+        s
+    }
+
+    pub fn full_text(&self) -> String {
+        self.rope.to_string()
+    }
+
+    fn cursor_to_char(&self, c: Cursor) -> usize {
+        let line = c.line.min(self.rope.len_lines().saturating_sub(1));
+        let line_start = self.rope.line_to_char(line);
+        let max_col = self.line_len(line);
+        line_start + c.col.min(max_col)
+    }
+
+    fn char_to_cursor(&self, idx: usize) -> Cursor {
+        let idx = idx.min(self.rope.len_chars());
+        let line = self.rope.char_to_line(idx);
+        let line_start = self.rope.line_to_char(line);
+        Cursor {
+            line,
+            col: idx - line_start,
+        }
+    }
+
+    // ----- Selection -----
+
+    /// The selection's (start, end) cursors in sorted order.
+    pub fn selection_range(&self) -> Option<(Cursor, Cursor)> {
+        let a = self.anchor?;
+        if a == self.cursor {
+            return None;
+        }
+        if a < self.cursor {
+            Some((a, self.cursor))
+        } else {
+            Some((self.cursor, a))
+        }
+    }
+
+    pub fn selected_text(&self) -> Option<String> {
+        let (start, end) = self.selection_range()?;
+        let s = self.cursor_to_char(start);
+        let e = self.cursor_to_char(end);
+        Some(self.rope.slice(s..e).to_string())
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.anchor = None;
+    }
+
+    /// Selection handling before a move: when `extend` is true the anchor is kept.
+    fn pre_move(&mut self, extend: bool) {
+        if extend {
+            if self.anchor.is_none() {
+                self.anchor = Some(self.cursor);
+            }
+        } else {
+            self.anchor = None;
+        }
+    }
+
+    // ----- Cursor movements -----
+
+    pub fn move_left(&mut self, extend: bool) {
+        self.pre_move(extend);
+        if self.cursor.col > 0 {
+            self.cursor.col -= 1;
+        } else if self.cursor.line > 0 {
+            self.cursor.line -= 1;
+            self.cursor.col = self.line_len(self.cursor.line);
+        }
+    }
+
+    pub fn move_right(&mut self, extend: bool) {
+        self.pre_move(extend);
+        let len = self.line_len(self.cursor.line);
+        if self.cursor.col < len {
+            self.cursor.col += 1;
+        } else if self.cursor.line + 1 < self.line_count() {
+            self.cursor.line += 1;
+            self.cursor.col = 0;
+        }
+    }
+
+    pub fn move_up(&mut self, extend: bool) {
+        self.pre_move(extend);
+        if self.cursor.line > 0 {
+            self.cursor.line -= 1;
+            self.cursor.col = self.cursor.col.min(self.line_len(self.cursor.line));
+        } else {
+            self.cursor.col = 0;
+        }
+    }
+
+    pub fn move_down(&mut self, extend: bool) {
+        self.pre_move(extend);
+        if self.cursor.line + 1 < self.line_count() {
+            self.cursor.line += 1;
+            self.cursor.col = self.cursor.col.min(self.line_len(self.cursor.line));
+        } else {
+            self.cursor.col = self.line_len(self.cursor.line);
+        }
+    }
+
+    pub fn move_home(&mut self, extend: bool) {
+        self.pre_move(extend);
+        self.cursor.col = 0;
+    }
+
+    pub fn move_end(&mut self, extend: bool) {
+        self.pre_move(extend);
+        self.cursor.col = self.line_len(self.cursor.line);
+    }
+
+    pub fn move_page(&mut self, delta: isize, extend: bool) {
+        self.pre_move(extend);
+        let target = (self.cursor.line as isize + delta)
+            .clamp(0, self.line_count().saturating_sub(1) as isize)
+            as usize;
+        self.cursor.line = target;
+        self.cursor.col = self.cursor.col.min(self.line_len(self.cursor.line));
+    }
+
+    pub fn select_all(&mut self) {
+        self.anchor = Some(Cursor { line: 0, col: 0 });
+        let last = self.line_count().saturating_sub(1);
+        self.cursor = Cursor {
+            line: last,
+            col: self.line_len(last),
+        };
+    }
+
+    pub fn set_cursor(&mut self, c: Cursor, extend: bool) {
+        self.pre_move(extend);
+        let line = c.line.min(self.line_count().saturating_sub(1));
+        self.cursor = Cursor {
+            line,
+            col: c.col.min(self.line_len(line)),
+        };
+    }
+
+    // ----- Editing -----
+
+    /// Deletes the selection (if any) and records the edit (merged into a single undo step).
+    fn delete_selection_internal(&mut self) -> bool {
+        if let Some((start, end)) = self.selection_range() {
+            let s = self.cursor_to_char(start);
+            let e = self.cursor_to_char(end);
+            let removed = self.rope.slice(s..e).to_string();
+            let cursor_before = self.cursor;
+            self.rope.remove(s..e);
+            self.anchor = None;
+            self.cursor = start;
+            self.push_edit(Edit {
+                char_idx: s,
+                before: removed,
+                after: String::new(),
+                cursor_before,
+                cursor_after: self.cursor,
+                stamp: Instant::now(),
+                typing: false,
+            });
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn insert_char(&mut self, ch: char) {
+        self.delete_selection_internal();
+        let idx = self.cursor_to_char(self.cursor);
+        let cursor_before = self.cursor;
+        self.rope.insert_char(idx, ch);
+        self.cursor = self.char_to_cursor(idx + 1);
+        let is_word = !ch.is_whitespace();
+        self.push_edit(Edit {
+            char_idx: idx,
+            before: String::new(),
+            after: ch.to_string(),
+            cursor_before,
+            cursor_after: self.cursor,
+            stamp: Instant::now(),
+            typing: is_word,
+        });
+    }
+
+    pub fn insert_str(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.delete_selection_internal();
+        let idx = self.cursor_to_char(self.cursor);
+        let cursor_before = self.cursor;
+        self.rope.insert(idx, text);
+        let char_len = text.chars().count();
+        self.cursor = self.char_to_cursor(idx + char_len);
+        self.push_edit(Edit {
+            char_idx: idx,
+            before: String::new(),
+            after: text.to_string(),
+            cursor_before,
+            cursor_after: self.cursor,
+            stamp: Instant::now(),
+            typing: false,
+        });
+    }
+
+    pub fn insert_newline(&mut self) {
+        self.insert_char('\n');
+        // Newlines should break the typing group.
+        if let Some(last) = self.undo_stack.last_mut() {
+            last.typing = false;
+        }
+    }
+
+    pub fn backspace(&mut self) {
+        if self.delete_selection_internal() {
+            return;
+        }
+        let idx = self.cursor_to_char(self.cursor);
+        if idx == 0 {
+            return;
+        }
+        let removed: String = self.rope.slice(idx - 1..idx).to_string();
+        let cursor_before = self.cursor;
+        self.rope.remove(idx - 1..idx);
+        self.cursor = self.char_to_cursor(idx - 1);
+        self.push_edit(Edit {
+            char_idx: idx - 1,
+            before: removed,
+            after: String::new(),
+            cursor_before,
+            cursor_after: self.cursor,
+            stamp: Instant::now(),
+            typing: false,
+        });
+    }
+
+    pub fn delete_forward(&mut self) {
+        if self.delete_selection_internal() {
+            return;
+        }
+        let idx = self.cursor_to_char(self.cursor);
+        if idx >= self.rope.len_chars() {
+            return;
+        }
+        let removed: String = self.rope.slice(idx..idx + 1).to_string();
+        let cursor_before = self.cursor;
+        self.rope.remove(idx..idx + 1);
+        self.push_edit(Edit {
+            char_idx: idx,
+            before: removed,
+            after: String::new(),
+            cursor_before,
+            cursor_after: self.cursor,
+            stamp: Instant::now(),
+            typing: false,
+        });
+    }
+
+    fn push_edit(&mut self, edit: Edit) {
+        self.dirty = true;
+        self.version += 1;
+        self.redo_stack.clear();
+
+        // Merge consecutive typed characters into a single undo step.
+        if edit.typing
+            && let Some(last) = self.undo_stack.last_mut() {
+                let contiguous = last.typing
+                    && last.before.is_empty()
+                    && edit.before.is_empty()
+                    && last.char_idx + last.after.chars().count() == edit.char_idx
+                    && edit.stamp.duration_since(last.stamp).as_millis() < 600;
+                if contiguous {
+                    last.after.push_str(&edit.after);
+                    last.cursor_after = edit.cursor_after;
+                    last.stamp = edit.stamp;
+                    return;
+                }
+            }
+        self.undo_stack.push(edit);
+    }
+
+    pub fn undo(&mut self) {
+        if let Some(edit) = self.undo_stack.pop() {
+            let start = edit.char_idx;
+            let after_len = edit.after.chars().count();
+            // Remove the `after` text and restore the `before` text.
+            self.rope.remove(start..start + after_len);
+            if !edit.before.is_empty() {
+                self.rope.insert(start, &edit.before);
+            }
+            self.cursor = edit.cursor_before;
+            self.anchor = None;
+            self.version += 1;
+            self.dirty = true;
+            self.redo_stack.push(edit);
+        }
+    }
+
+    pub fn redo(&mut self) {
+        if let Some(edit) = self.redo_stack.pop() {
+            let start = edit.char_idx;
+            let before_len = edit.before.chars().count();
+            self.rope.remove(start..start + before_len);
+            if !edit.after.is_empty() {
+                self.rope.insert(start, &edit.after);
+            }
+            self.cursor = edit.cursor_after;
+            self.anchor = None;
+            self.version += 1;
+            self.dirty = true;
+            self.undo_stack.push(edit);
+        }
+    }
+
+    pub fn mark_saved(&mut self) {
+        self.dirty = false;
+    }
+
+    /// Deletes the selected text (recorded as a single undo operation). Returns false if there is no selection.
+    pub fn delete_selection(&mut self) -> bool {
+        self.delete_selection_internal()
+    }
+
+    /// Moves the cursor to the start of the given line (for search results / goto).
+    pub fn goto_line(&mut self, line: usize) {
+        self.anchor = None;
+        let line = line.min(self.line_count().saturating_sub(1));
+        self.cursor = Cursor { line, col: 0 };
+    }
+
+    /// Adjusts scroll to keep the cursor visible given the viewport height.
+    pub fn ensure_visible(&mut self, height: usize, width: usize) {
+        if height == 0 {
+            return;
+        }
+        if self.cursor.line < self.scroll_y {
+            self.scroll_y = self.cursor.line;
+        } else if self.cursor.line >= self.scroll_y + height {
+            self.scroll_y = self.cursor.line + 1 - height;
+        }
+        if width > 0 {
+            if self.cursor.col < self.scroll_x {
+                self.scroll_x = self.cursor.col;
+            } else if self.cursor.col >= self.scroll_x + width {
+                self.scroll_x = self.cursor.col + 1 - width;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insert_and_undo() {
+        let mut b = Buffer::scratch();
+        for c in "hello".chars() {
+            b.insert_char(c);
+        }
+        assert_eq!(b.full_text(), "hello");
+        b.undo();
+        assert_eq!(b.full_text(), "");
+        b.redo();
+        assert_eq!(b.full_text(), "hello");
+    }
+
+    #[test]
+    fn newline_splits_undo_groups() {
+        let mut b = Buffer::scratch();
+        for c in "ab".chars() {
+            b.insert_char(c);
+        }
+        b.insert_newline();
+        for c in "cd".chars() {
+            b.insert_char(c);
+        }
+        assert_eq!(b.full_text(), "ab\ncd");
+        b.undo(); // cd
+        assert_eq!(b.full_text(), "ab\n");
+        b.undo(); // newline
+        assert_eq!(b.full_text(), "ab");
+        b.undo(); // ab
+        assert_eq!(b.full_text(), "");
+    }
+
+    #[test]
+    fn selection_delete() {
+        let mut b = Buffer::new(None, "hello world");
+        b.move_right(false);
+        b.move_right(true);
+        b.move_right(true);
+        assert_eq!(b.selected_text().as_deref(), Some("el"));
+        b.backspace();
+        assert_eq!(b.full_text(), "hlo world");
+    }
+}
