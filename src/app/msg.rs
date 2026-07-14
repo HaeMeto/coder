@@ -49,6 +49,13 @@ pub enum Msg {
         path: PathBuf,
         text: Option<String>,
     },
+    /// A file changed on disk (from the filesystem watcher).
+    DiskChanged(PathBuf),
+    /// Fresh on-disk content for an externally-changed, unmodified open file.
+    FileReloaded {
+        path: PathBuf,
+        text: String,
+    },
 
     // Terminal
     PtyReady(PtySession),

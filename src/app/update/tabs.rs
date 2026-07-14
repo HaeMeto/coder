@@ -61,6 +61,68 @@ pub(super) fn open_path(model: &mut Model, path: PathBuf) -> Vec<Cmd> {
     open_path_at(model, path, 0)
 }
 
+/// Compares an open buffer's path to a canonicalized disk path.
+fn buf_path_eq(p: &Option<PathBuf>, target: &std::path::Path) -> bool {
+    match p {
+        Some(p) => p.as_path() == target || p.canonicalize().ok().as_deref() == Some(target),
+        None => false,
+    }
+}
+
+/// A watched file changed on disk: reload it only if it is open and has no
+/// unsaved edits (a dirty buffer keeps its live text — see `apply_reload`).
+pub(super) fn reload_if_clean(model: &mut Model, path: PathBuf) -> Vec<Cmd> {
+    let target = path.canonicalize().unwrap_or(path);
+    let has_clean = model
+        .tabs
+        .iter()
+        .any(|t| !t.buffer.dirty && buf_path_eq(&t.buffer.path, &target));
+    if has_clean {
+        vec![Cmd::ReloadFile(target)]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Applies fresh on-disk content to every clean tab of a file, preserving the
+/// cursor and scroll position. Dirty tabs and no-op reloads (e.g. our own save)
+/// are skipped so unsaved work is never clobbered.
+pub(super) fn apply_reload(model: &mut Model, path: PathBuf, text: String) -> Vec<Cmd> {
+    let target = path.canonicalize().unwrap_or(path);
+    let mut reloaded = false;
+    for i in 0..model.tabs.len() {
+        if !buf_path_eq(&model.tabs[i].buffer.path, &target) {
+            continue;
+        }
+        let tab = &mut model.tabs[i];
+        if tab.buffer.dirty || tab.buffer.full_text() == text {
+            continue; // live edits present, or nothing actually changed
+        }
+        let cur = tab.buffer.cursor;
+        let (sy, sx) = (tab.buffer.scroll_y, tab.buffer.scroll_x);
+        let keep_path = tab.buffer.path.clone();
+        tab.buffer = Buffer::new(keep_path, &text);
+        // Restore cursor / scroll, clamped to the (possibly shorter) new content.
+        let last = tab.buffer.line_count().saturating_sub(1);
+        let line = cur.line.min(last);
+        let col = cur.col.min(tab.buffer.line_len(line));
+        tab.buffer.cursor = Cursor { line, col };
+        tab.buffer.scroll_y = sy.min(last);
+        tab.buffer.scroll_x = sx;
+        tab.buffer.mark_saved();
+        reloaded = true;
+        if model.active_tab == Some(i) {
+            model.invalidate_highlight();
+        }
+    }
+    if reloaded {
+        model.status_message = format!("Reloaded from disk: {}", target.display());
+        vec![Cmd::LoadHeadText(target)]
+    } else {
+        Vec::new()
+    }
+}
+
 /// Opens a file as a diff-mode tab (from the Git panel): reuses an existing diff
 /// tab for the path, otherwise loads a fresh one flagged via `pending_diff`.
 pub(super) fn open_diff(model: &mut Model, path: PathBuf) -> Vec<Cmd> {

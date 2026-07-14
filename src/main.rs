@@ -78,6 +78,9 @@ async fn run(terminal: &mut Tui, root: std::path::PathBuf) -> Result<()> {
         model.term_size = (w, h);
     }
 
+    // Watch the workspace for external file changes (best-effort; kept alive here).
+    let _watcher = spawn_watcher(root.clone(), tx.clone());
+
     // Initial side effects: scan the root directory + load git status.
     dispatch(
         vec![Cmd::ScanDir(root.clone()), Cmd::LoadGitStatus],
@@ -120,6 +123,28 @@ async fn run(terminal: &mut Tui, root: std::path::PathBuf) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Starts a recursive filesystem watcher on `root`; each change becomes a
+/// `Msg::DiskChanged`. Returns the watcher (must stay alive to keep watching);
+/// `None` if the platform watcher could not be created.
+fn spawn_watcher(
+    root: std::path::PathBuf,
+    tx: UnboundedSender<Msg>,
+) -> Option<notify::RecommendedWatcher> {
+    use notify::{EventKind, RecursiveMode, Watcher};
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if let Ok(event) = res
+            && matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_))
+        {
+            for path in event.paths {
+                let _ = tx.send(Msg::DiskChanged(path));
+            }
+        }
+    })
+    .ok()?;
+    watcher.watch(&root, RecursiveMode::Recursive).ok()?;
+    Some(watcher)
 }
 
 /// Converts a crossterm event into application messages.

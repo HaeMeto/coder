@@ -219,7 +219,9 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
                     model.focus = Focus::Sidebar;
                     model.dialog = Some(Dialog::ask(
                         "Revert changes".to_string(),
-                        format!("Changes in '{rel}' will be reverted. This cannot be undone. Are you sure?"),
+                        format!(
+                            "Changes in '{rel}' will be reverted. This cannot be undone. Are you sure?"
+                        ),
                         DialogAction::GitRevert(rel),
                     ));
                     Vec::new()

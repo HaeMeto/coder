@@ -118,6 +118,8 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             }
             Vec::new()
         }
+        Msg::DiskChanged(path) => reload_if_clean(model, path),
+        Msg::FileReloaded { path, text } => apply_reload(model, path, text),
         Msg::FileSaved { path } => {
             for i in model.all_tabs_for(&path) {
                 model.tabs[i].buffer.mark_saved();

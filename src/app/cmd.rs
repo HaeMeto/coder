@@ -12,6 +12,8 @@ use crate::services;
 pub enum Cmd {
     ScanDir(PathBuf),
     ReadFile(PathBuf),
+    /// Re-read a file that changed on disk (result -> `Msg::FileReloaded`).
+    ReloadFile(PathBuf),
     WriteFile { path: PathBuf, contents: String },
     /// Load the HEAD content of a file for the change gutter.
     LoadHeadText(PathBuf),
@@ -100,6 +102,13 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
                     Err(e) => {
                         let _ = tx.send(Msg::Error(format!("could not open file: {e}")));
                     }
+                }
+            });
+        }
+        Cmd::ReloadFile(path) => {
+            tokio::spawn(async move {
+                if let Ok(text) = services::fs::read_file(&path).await {
+                    let _ = tx.send(Msg::FileReloaded { path, text });
                 }
             });
         }
