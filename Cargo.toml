@@ -24,3 +24,5 @@ anyhow = "1"
 thiserror = "2"
 arboard = "3"
 futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

@@ -16,11 +16,40 @@ pub struct Theme {
     pub tab_inactive_bg: Color,
     pub border: Color,
     pub line_number: Color,
-    pub cursor_line: Color,
     pub git_added: Color,
     pub git_modified: Color,
     pub git_deleted: Color,
     pub git_untracked: Color,
+    /// Subtle line background for added/modified lines (diff view in the editor).
+    pub diff_add_bg: Color,
+    /// Subtle line background for removed lines (diff view in the editor).
+    pub diff_del_bg: Color,
+}
+
+/// Scales each RGB channel by `f`, clamped to 0..=255 (non-RGB colors pass through).
+fn scale(c: Color, f: f32) -> Color {
+    match c {
+        Color::Rgb(r, g, b) => Color::Rgb(
+            (r as f32 * f).min(255.0) as u8,
+            (g as f32 * f).min(255.0) as u8,
+            (b as f32 * f).min(255.0) as u8,
+        ),
+        other => other,
+    }
+}
+
+impl Theme {
+    /// Background for text-input fields: 20% darker than the panel background so
+    /// inputs read as sunken even when not focused.
+    pub fn input_bg(&self) -> Color {
+        scale(self.bg_alt, 0.7)
+    }
+
+    /// Background of the open (active tab's) file row in the explorer: 20% lighter
+    /// than the panel background so the active file is visible at a glance.
+    pub fn active_row_bg(&self) -> Color {
+        scale(self.bg_alt, 0.7)
+    }
 }
 
 impl Default for Theme {
@@ -39,11 +68,12 @@ impl Default for Theme {
             tab_inactive_bg: Color::Rgb(45, 45, 45),
             border: Color::Rgb(64, 64, 64),
             line_number: Color::Rgb(133, 133, 133),
-            cursor_line: Color::Rgb(40, 40, 40),
             git_added: Color::Rgb(129, 184, 139),
             git_modified: Color::Rgb(226, 192, 141),
             git_deleted: Color::Rgb(199, 118, 117),
             git_untracked: Color::Rgb(115, 201, 145),
+            diff_add_bg: Color::Rgb(32, 51, 37),
+            diff_del_bg: Color::Rgb(60, 34, 34),
         }
     }
 }

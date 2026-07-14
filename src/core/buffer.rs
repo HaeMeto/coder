@@ -111,6 +111,11 @@ impl Buffer {
         self.rope.to_string()
     }
 
+    /// Absolute character index of the cursor (for find/replace positioning).
+    pub fn cursor_char_index(&self) -> usize {
+        self.cursor_to_char(self.cursor)
+    }
+
     fn cursor_to_char(&self, c: Cursor) -> usize {
         let line = c.line.min(self.rope.len_lines().saturating_sub(1));
         let line_start = self.rope.line_to_char(line);
@@ -218,6 +223,50 @@ impl Buffer {
         self.cursor.col = self.line_len(self.cursor.line);
     }
 
+    /// Moves the cursor left to the previous word boundary (Ctrl+Left).
+    /// Skips whitespace, then a run of same-class characters (word vs. symbol).
+    pub fn move_word_left(&mut self, extend: bool) {
+        self.pre_move(extend);
+        let mut i = self.cursor_to_char(self.cursor);
+        let is_word = |ch: char| ch.is_alphanumeric() || ch == '_';
+        while i > 0 && self.rope.char(i - 1).is_whitespace() {
+            i -= 1;
+        }
+        if i > 0 {
+            let word = is_word(self.rope.char(i - 1));
+            while i > 0 {
+                let c = self.rope.char(i - 1);
+                if c.is_whitespace() || is_word(c) != word {
+                    break;
+                }
+                i -= 1;
+            }
+        }
+        self.cursor = self.char_to_cursor(i);
+    }
+
+    /// Moves the cursor right to the next word boundary (Ctrl+Right).
+    pub fn move_word_right(&mut self, extend: bool) {
+        self.pre_move(extend);
+        let len = self.rope.len_chars();
+        let mut i = self.cursor_to_char(self.cursor);
+        let is_word = |ch: char| ch.is_alphanumeric() || ch == '_';
+        while i < len && self.rope.char(i).is_whitespace() {
+            i += 1;
+        }
+        if i < len {
+            let word = is_word(self.rope.char(i));
+            while i < len {
+                let c = self.rope.char(i);
+                if c.is_whitespace() || is_word(c) != word {
+                    break;
+                }
+                i += 1;
+            }
+        }
+        self.cursor = self.char_to_cursor(i);
+    }
+
     pub fn move_page(&mut self, delta: isize, extend: bool) {
         self.pre_move(extend);
         let target = (self.cursor.line as isize + delta)
@@ -234,6 +283,38 @@ impl Buffer {
             line: last,
             col: self.line_len(last),
         };
+    }
+
+    /// Selects the word (identifier run) at the given position. No-op when there
+    /// is no word character to select there. Used by editor double-click.
+    pub fn select_word_at(&mut self, c: Cursor) {
+        let line = c.line.min(self.line_count().saturating_sub(1));
+        let text: Vec<char> = self.line_text(line).chars().collect();
+        let len = text.len();
+        let col = c.col.min(len);
+        let is_word = |ch: char| ch.is_alphanumeric() || ch == '_';
+        if !text.get(col).copied().map(is_word).unwrap_or(false) {
+            return; // not on a word character
+        }
+        let (mut s, mut e) = (col, col);
+        while s > 0 && is_word(text[s - 1]) {
+            s -= 1;
+        }
+        while e < len && is_word(text[e]) {
+            e += 1;
+        }
+        if s == e {
+            return;
+        }
+        self.anchor = Some(Cursor { line, col: s });
+        self.cursor = Cursor { line, col: e };
+    }
+
+    /// Selects the character range [start, end) given in absolute character
+    /// indices (used to highlight a find match). Clamps into the text.
+    pub fn select_char_range(&mut self, start: usize, end: usize) {
+        self.anchor = Some(self.char_to_cursor(start));
+        self.cursor = self.char_to_cursor(end);
     }
 
     pub fn set_cursor(&mut self, c: Cursor, extend: bool) {
@@ -424,6 +505,32 @@ impl Buffer {
         self.dirty = false;
     }
 
+    /// Replaces the entire buffer content, recorded as a single undo step.
+    /// The cursor is clamped into the new text. No-op if the text is unchanged.
+    pub fn replace_all(&mut self, text: &str) {
+        let old = self.rope.to_string();
+        if old == text {
+            return;
+        }
+        let cursor_before = self.cursor;
+        self.rope = Rope::from_str(text);
+        let line = self.cursor.line.min(self.line_count().saturating_sub(1));
+        self.cursor = Cursor {
+            line,
+            col: self.cursor.col.min(self.line_len(line)),
+        };
+        self.anchor = None;
+        self.push_edit(Edit {
+            char_idx: 0,
+            before: old,
+            after: text.to_string(),
+            cursor_before,
+            cursor_after: self.cursor,
+            stamp: Instant::now(),
+            typing: false,
+        });
+    }
+
     /// Deletes the selected text (recorded as a single undo operation). Returns false if there is no selection.
     pub fn delete_selection(&mut self) -> bool {
         self.delete_selection_internal()
@@ -490,6 +597,53 @@ mod tests {
         assert_eq!(b.full_text(), "ab");
         b.undo(); // ab
         assert_eq!(b.full_text(), "");
+    }
+
+    #[test]
+    fn replace_all_is_undoable() {
+        let mut b = Buffer::new(None, "a  \nb\n");
+        b.replace_all("a\nb\n");
+        assert_eq!(b.full_text(), "a\nb\n");
+        assert!(b.dirty);
+        b.undo();
+        assert_eq!(b.full_text(), "a  \nb\n");
+        // No-op when unchanged: no new undo step.
+        b.replace_all("a  \nb\n");
+        b.undo();
+        assert_eq!(b.full_text(), "a  \nb\n");
+    }
+
+    #[test]
+    fn double_click_selects_word() {
+        let mut b = Buffer::new(None, "foo bar_baz qux");
+        b.select_word_at(Cursor { line: 0, col: 5 }); // inside "bar_baz"
+        assert_eq!(b.selected_text().as_deref(), Some("bar_baz"));
+        // Clicking on whitespace selects nothing.
+        b.clear_selection();
+        b.select_word_at(Cursor { line: 0, col: 3 });
+        assert!(b.selected_text().is_none());
+    }
+
+    #[test]
+    fn select_char_range_spans_lines() {
+        let b0 = Buffer::new(None, "abc\ndef");
+        let mut b = b0;
+        b.select_char_range(1, 5); // "bc\nd"
+        assert_eq!(b.selected_text().as_deref(), Some("bc\nd"));
+    }
+
+    #[test]
+    fn word_motion() {
+        let mut b = Buffer::new(None, "foo bar_baz  qux");
+        b.move_word_right(false); // start -> after "foo"
+        assert_eq!(b.cursor, Cursor { line: 0, col: 3 });
+        b.move_word_right(false); // -> after "bar_baz"
+        assert_eq!(b.cursor, Cursor { line: 0, col: 11 });
+        b.move_word_left(false); // back to start of "bar_baz"
+        assert_eq!(b.cursor, Cursor { line: 0, col: 4 });
+        // Shift extends: anchor stays put.
+        b.move_word_right(true);
+        assert_eq!(b.selected_text().as_deref(), Some("bar_baz"));
     }
 
     #[test]

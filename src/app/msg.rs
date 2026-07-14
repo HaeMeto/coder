@@ -31,6 +31,10 @@ pub enum Msg {
         staged: Vec<GitEntry>,
         unstaged: Vec<GitEntry>,
         is_repo: bool,
+        ahead: usize,
+        behind: usize,
+        has_upstream: bool,
+        has_remote: bool,
     },
     SearchResults {
         query: String,
@@ -39,6 +43,11 @@ pub enum Msg {
     ReplaceDone {
         changed: Vec<PathBuf>,
         count: usize,
+    },
+    /// The HEAD content of a file (for the change gutter).
+    HeadTextLoaded {
+        path: PathBuf,
+        text: Option<String>,
     },
 
     // Terminal

@@ -8,6 +8,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::app::model::{Focus, Model};
 use crate::core::buffer::Cursor;
+use crate::services::git::GutterKind;
 
 pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
     frame.render_widget(
@@ -34,6 +35,8 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
     let scroll_x = buf.scroll_x;
 
     let selection = buf.selection_range();
+    // Changed-line backgrounds are only drawn for diff-mode tabs (opened from Git).
+    let diff_bg = model.active_is_diff();
 
     let mut lines: Vec<Line> = Vec::with_capacity(height);
     for row in top..top + height {
@@ -47,16 +50,35 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
         } else {
             Style::new().fg(model.theme.line_number)
         };
-        let gutter = format!("{:>width$} ", row + 1, width = (gutter_w as usize).saturating_sub(1));
-        let mut spans: Vec<Span> = vec![Span::styled(gutter, ln_style)];
+        let mut spans: Vec<Span> = Vec::new();
+        // Git change marker column (leftmost), when the file is tracked.
+        let git_on = model.git_gutter();
+        let mark = if git_on { model.active_git_marks.get(&row).copied() } else { None };
+        if git_on {
+            let (ch, color) = match mark {
+                Some(GutterKind::Added) => (if model.ascii_icons { "|" } else { "▍" }, model.theme.git_added),
+                Some(GutterKind::Deleted) => (if model.ascii_icons { "_" } else { "▁" }, model.theme.git_deleted),
+                None => (" ", model.theme.bg),
+            };
+            spans.push(Span::styled(ch.to_string(), Style::new().fg(color)));
+        }
+        let num_w = (gutter_w as usize).saturating_sub(if git_on { 2 } else { 1 });
+        let gutter = format!("{:>num_w$} ", row + 1);
+        spans.push(Span::styled(gutter, ln_style));
 
         // Highlighted text pieces (clipped by scroll_x).
         let hl_line = model.active_hl.get(row);
         append_text_spans(&mut spans, hl_line, buf, row, scroll_x, text_w, model);
 
         let mut line = Line::from(spans);
-        if is_cursor_line {
-            line = line.style(Style::new().bg(model.theme.cursor_line));
+        // Only diff-mode changed lines get a background; the cursor line is not filled.
+        let bg = match mark {
+            Some(GutterKind::Added) if diff_bg => Some(model.theme.diff_add_bg),
+            Some(GutterKind::Deleted) if diff_bg => Some(model.theme.diff_del_bg),
+            _ => None,
+        };
+        if let Some(bg) = bg {
+            line = line.style(Style::new().bg(bg));
         }
         lines.push(line);
     }
@@ -132,6 +154,69 @@ fn append_text_spans(
             push_piece(spans, &text, model.theme.fg, scroll_x, width, &mut col, &mut taken);
         }
     }
+}
+
+/// Renders the editor scrollbar (rightmost column): a draggable thumb plus git
+/// change marks (green line = addition, red line = deletion) at proportional rows.
+pub fn render_scrollbar(frame: &mut Frame, area: Rect, model: &Model) {
+    let th = &model.theme;
+    let h = area.height as usize;
+    if h == 0 {
+        return;
+    }
+    let Some(buf) = model.active_buffer() else {
+        frame.render_widget(
+            Paragraph::new("").style(Style::new().bg(th.bg_alt)),
+            area,
+        );
+        return;
+    };
+    let n = buf.line_count().max(1);
+
+    // Thumb: the currently visible portion of the file.
+    let (thumb_start, thumb_end) = if n > h {
+        let ts = buf.scroll_y * h / n;
+        let tl = (h * h / n).max(1);
+        (ts, (ts + tl).min(h))
+    } else {
+        (0, h)
+    };
+
+    // Project git change marks onto scrollbar rows.
+    let mut mark_rows: std::collections::HashMap<usize, GutterKind> =
+        std::collections::HashMap::new();
+    if model.git_gutter() {
+        for (&ln, &kind) in &model.active_git_marks {
+            let row = (ln * h / n).min(h - 1);
+            // Deletions win over additions on a shared row so removals stay visible.
+            mark_rows
+                .entry(row)
+                .and_modify(|k| {
+                    if kind == GutterKind::Deleted {
+                        *k = kind;
+                    }
+                })
+                .or_insert(kind);
+        }
+    }
+
+    let dash = if model.ascii_icons { "-" } else { "─" };
+    let mut lines: Vec<Line> = Vec::with_capacity(h);
+    for y in 0..h {
+        let in_thumb = y >= thumb_start && y < thumb_end;
+        let track_bg = if in_thumb { th.fg_dim } else { th.bg_alt };
+        let span = match mark_rows.get(&y) {
+            Some(GutterKind::Added) => {
+                Span::styled(dash, Style::new().fg(th.git_added).bg(track_bg))
+            }
+            Some(GutterKind::Deleted) => {
+                Span::styled(dash, Style::new().fg(th.git_deleted).bg(track_bg))
+            }
+            None => Span::styled(" ", Style::new().bg(track_bg)),
+        };
+        lines.push(Line::from(span));
+    }
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn overlay_selection(

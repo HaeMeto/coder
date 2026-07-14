@@ -29,7 +29,7 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
             style = style.add_modifier(Modifier::BOLD);
         }
         spans.push(Span::styled(
-            format!(" {} {} ", tab.buffer.display_name(), dirty),
+            format!(" {} {} ", tab.title(), dirty),
             style,
         ));
         // Close button (clicking it closes the tab).
@@ -55,8 +55,8 @@ pub enum TabHit {
 pub fn tab_at(model: &Model, area: Rect, x: u16) -> Option<TabHit> {
     let mut cursor = area.x;
     for (i, tab) in model.tabs.iter().enumerate() {
-        // " {name} {dirty} ✕ │"
-        let w_name = tab.buffer.display_name().chars().count() as u16;
+        // " {title} {dirty} ✕ │"
+        let w_name = tab.title().chars().count() as u16;
         let total = w_name + 6 + 1; // body (name+6) + separator "│"
         if x >= cursor && x < cursor + total {
             // ✕ position: " " + name + " " + dirty + " " = name+4 offset.

@@ -154,6 +154,8 @@ pub fn theme_for(name: &str) -> Theme {
     let fg = s.foreground.map(conv).unwrap_or(def.fg);
     let dark = luma(bg) < 128.0;
     let accent = s.caret.or(s.find_highlight).map(conv).unwrap_or(def.accent);
+    // Status bar: a touch darker than the accent on dark themes, a touch lighter on light ones.
+    let statusbar_bg = shade(accent, if dark { 0.8 } else { 1.2 });
     Theme {
         bg,
         bg_alt: shade(bg, if dark { 1.25 } else { 0.94 }),
@@ -162,8 +164,8 @@ pub fn theme_for(name: &str) -> Theme {
         accent,
         selection: s.selection.map(conv).unwrap_or(def.selection),
         activity_bg: shade(bg, if dark { 1.45 } else { 0.90 }),
-        statusbar_bg: accent,
-        statusbar_fg: if luma(accent) < 128.0 {
+        statusbar_bg,
+        statusbar_fg: if luma(statusbar_bg) < 128.0 {
             Color::Rgb(255, 255, 255)
         } else {
             Color::Rgb(0, 0, 0)
@@ -172,14 +174,13 @@ pub fn theme_for(name: &str) -> Theme {
         tab_inactive_bg: shade(bg, if dark { 1.25 } else { 0.94 }),
         border: shade(bg, if dark { 1.9 } else { 0.82 }),
         line_number: s.gutter_foreground.map(conv).unwrap_or(def.line_number),
-        cursor_line: s
-            .line_highlight
-            .map(conv)
-            .unwrap_or_else(|| shade(bg, if dark { 1.2 } else { 0.95 })),
         git_added: def.git_added,
         git_modified: def.git_modified,
         git_deleted: def.git_deleted,
         git_untracked: def.git_untracked,
+        // Subtle change backgrounds: mostly the editor bg with a hint of the git color.
+        diff_add_bg: mix(def.git_added, bg, 0.82),
+        diff_del_bg: mix(def.git_deleted, bg, 0.82),
     }
 }
 

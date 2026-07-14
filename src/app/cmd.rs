@@ -13,6 +13,8 @@ pub enum Cmd {
     ScanDir(PathBuf),
     ReadFile(PathBuf),
     WriteFile { path: PathBuf, contents: String },
+    /// Load the HEAD content of a file for the change gutter.
+    LoadHeadText(PathBuf),
     LoadGitStatus,
     GitStage(String),
     GitUnstage(String),
@@ -20,17 +22,43 @@ pub enum Cmd {
     GitUnstageAll,
     GitRevert(String),
     GitCommit(String),
+    GitFetch,
+    GitPull,
+    GitPush,
     RunSearch {
         query: String,
         use_regex: bool,
+        match_case: bool,
+        search_hidden: bool,
     },
     RunReplace {
         query: String,
         replace: String,
         use_regex: bool,
+        match_case: bool,
+        search_hidden: bool,
+    },
+    /// Replace within a single file (from the search panel's "Replace" button).
+    RunReplaceFile {
+        path: PathBuf,
+        query: String,
+        replace: String,
+        use_regex: bool,
+        match_case: bool,
     },
     SpawnPty { rows: u16, cols: u16 },
     SetClipboard(String),
+    /// Persist user preferences (theme + settings) to the config file.
+    SaveConfig(services::config::Config),
+}
+
+/// The first non-empty line of a message, for the one-line status bar.
+fn first_line(s: &str) -> String {
+    s.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Loads the git status and sends `Msg::GitStatusLoaded`.
@@ -41,6 +69,10 @@ fn send_git_status(root: &std::path::Path, tx: &UnboundedSender<Msg>) {
         staged: status.staged,
         unstaged: status.unstaged,
         is_repo: status.is_repo,
+        ahead: status.ahead,
+        behind: status.behind,
+        has_upstream: status.has_upstream,
+        has_remote: status.has_remote,
     });
 }
 
@@ -81,6 +113,12 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
                         let _ = tx.send(Msg::Error(format!("could not save: {e}")));
                     }
                 }
+            });
+        }
+        Cmd::LoadHeadText(path) => {
+            tokio::task::spawn_blocking(move || {
+                let text = services::git::head_file(&path);
+                let _ = tx.send(Msg::HeadTextLoaded { path, text });
             });
         }
         Cmd::LoadGitStatus => {
@@ -141,9 +179,54 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
                 send_git_status(&root, &tx);
             });
         }
-        Cmd::RunSearch { query, use_regex } => {
+        Cmd::GitFetch => {
             tokio::task::spawn_blocking(move || {
-                let matches = services::search::search(&root, &query, use_regex, 500);
+                match services::git::fetch(&root) {
+                    Ok(_) => {
+                        let _ = tx.send(Msg::Status("Fetched".to_string()));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Msg::Error(format!("fetch failed: {}", first_line(&e))));
+                    }
+                }
+                send_git_status(&root, &tx);
+            });
+        }
+        Cmd::GitPull => {
+            tokio::task::spawn_blocking(move || {
+                match services::git::pull(&root) {
+                    Ok(m) => {
+                        let _ = tx.send(Msg::Status(format!("Pulled: {}", first_line(&m))));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Msg::Error(format!("pull failed: {}", first_line(&e))));
+                    }
+                }
+                send_git_status(&root, &tx);
+            });
+        }
+        Cmd::GitPush => {
+            tokio::task::spawn_blocking(move || {
+                match services::git::push(&root) {
+                    Ok(_) => {
+                        let _ = tx.send(Msg::Status("Pushed".to_string()));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Msg::Error(format!("push failed: {}", first_line(&e))));
+                    }
+                }
+                send_git_status(&root, &tx);
+            });
+        }
+        Cmd::RunSearch {
+            query,
+            use_regex,
+            match_case,
+            search_hidden,
+        } => {
+            tokio::task::spawn_blocking(move || {
+                let matches =
+                    services::search::search(&root, &query, use_regex, match_case, search_hidden, 500);
                 let _ = tx.send(Msg::SearchResults { query, matches });
             });
         }
@@ -151,10 +234,32 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
             query,
             replace,
             use_regex,
+            match_case,
+            search_hidden,
         } => {
             tokio::task::spawn_blocking(move || {
-                let (changed, count) =
-                    services::search::replace_all(&root, &query, &replace, use_regex);
+                let (changed, count) = services::search::replace_all(
+                    &root,
+                    &query,
+                    &replace,
+                    use_regex,
+                    match_case,
+                    search_hidden,
+                );
+                let _ = tx.send(Msg::ReplaceDone { changed, count });
+            });
+        }
+        Cmd::RunReplaceFile {
+            path,
+            query,
+            replace,
+            use_regex,
+            match_case,
+        } => {
+            tokio::task::spawn_blocking(move || {
+                let count =
+                    services::search::replace_in_file(&path, &query, &replace, use_regex, match_case);
+                let changed = if count > 0 { vec![path] } else { Vec::new() };
                 let _ = tx.send(Msg::ReplaceDone { changed, count });
             });
         }
@@ -175,6 +280,11 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
                 if let Ok(mut cb) = arboard::Clipboard::new() {
                     let _ = cb.set_text(text);
                 }
+            });
+        }
+        Cmd::SaveConfig(config) => {
+            tokio::task::spawn_blocking(move || {
+                services::config::save(&config);
             });
         }
     }

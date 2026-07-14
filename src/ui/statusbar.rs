@@ -36,6 +36,7 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
         crate::app::model::Focus::Sidebar => "SIDEBAR",
         crate::app::model::Focus::SearchInput => "SEARCH",
         crate::app::model::Focus::GitCommit => "COMMIT",
+        crate::app::model::Focus::Find => "FIND",
     };
     right.push_str(focus);
     right.push(' ');

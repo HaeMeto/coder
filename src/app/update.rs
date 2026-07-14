@@ -7,7 +7,7 @@ use ratatui::layout::Rect;
 
 use crate::app::cmd::Cmd;
 use crate::app::model::{
-    Dialog, DialogAction, DialogKind, DragTarget, Focus, Model, Panel, SearchField, Tab,
+    Dialog, DialogAction, DialogKind, DragTarget, FindField, Focus, Model, Panel, SearchField, Tab,
 };
 use crate::app::msg::Msg;
 use crate::core::buffer::{Buffer, Cursor};
@@ -43,7 +43,14 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         }
         Msg::FileLoaded { path, text } => {
             let buffer = Buffer::new(Some(path.clone()), &text);
-            let tab = Tab::new(buffer);
+            let mut tab = Tab::new(buffer);
+            // Highlight with the active theme (Tab::new defaults to DEFAULT_THEME).
+            tab.highlighter.set_theme(model.current_theme_name());
+            // A load requested from the Git panel becomes a diff-mode tab.
+            if model.pending_diff.as_deref() == Some(path.as_path()) {
+                tab.diff_mode = true;
+                model.pending_diff = None;
+            }
             model.tabs.push(tab);
             model.active_tab = Some(model.tabs.len() - 1);
             model.focus = Focus::Editor;
@@ -54,10 +61,21 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                         buf.goto_line(line);
                     }
             ensure_cursor_visible(model);
+            // Load the HEAD content for the change gutter.
+            vec![Cmd::LoadHeadText(path)]
+        }
+        Msg::HeadTextLoaded { path, text } => {
+            // Update every open tab for this file (a normal tab and its diff tab).
+            for i in model.all_tabs_for(&path) {
+                model.tabs[i].head_text = text.clone();
+                if model.active_tab == Some(i) {
+                    model.invalidate_highlight();
+                }
+            }
             Vec::new()
         }
         Msg::FileSaved { path } => {
-            if let Some(i) = model.tab_index_for(&path) {
+            for i in model.all_tabs_for(&path) {
                 model.tabs[i].buffer.mark_saved();
             }
             model.status_message = format!("Saved: {}", path.display());
@@ -69,17 +87,31 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             staged,
             unstaged,
             is_repo,
+            ahead,
+            behind,
+            has_upstream,
+            has_remote,
         } => {
             let g = &mut model.sidebar.git;
             g.branch = branch;
             g.staged = staged;
             g.unstaged = unstaged;
             g.is_repo = is_repo;
+            g.ahead = ahead;
+            g.behind = behind;
+            g.has_upstream = has_upstream;
+            g.has_remote = has_remote;
             let len = g.nav_len();
             if g.selected >= len {
                 g.selected = len.saturating_sub(1);
             }
-            Vec::new()
+            // Refresh the change gutter for open files (HEAD may have moved after a commit/revert).
+            model
+                .tabs
+                .iter()
+                .filter_map(|t| t.buffer.path.clone())
+                .map(Cmd::LoadHeadText)
+                .collect()
         }
         Msg::SearchResults { query, matches } => {
             if query == model.sidebar.search.query {
@@ -93,10 +125,10 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::ReplaceDone { changed, count } => {
             // Reload buffers that are open and changed on disk.
             for path in &changed {
-                if let Some(i) = model.tab_index_for(path)
-                    && let Ok(text) = std::fs::read_to_string(path)
-                {
-                    model.tabs[i].buffer = Buffer::new(Some(path.clone()), &text);
+                if let Ok(text) = std::fs::read_to_string(path) {
+                    for i in model.all_tabs_for(path) {
+                        model.tabs[i].buffer = Buffer::new(Some(path.clone()), &text);
+                    }
                 }
             }
             model.invalidate_highlight();
@@ -109,6 +141,8 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                 cmds.push(Cmd::RunSearch {
                     query: s.query.clone(),
                     use_regex: s.use_regex,
+                    match_case: s.match_case,
+                    search_hidden: s.search_hidden,
                 });
             }
             cmds
@@ -180,6 +214,7 @@ fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         }
         Action::SelectPanel(p) => select_panel(model, p),
         Action::Save => {
+            apply_format_on_save(model);
             if let Some(buf) = model.active_buffer() {
                 if let Some(path) = buf.path.clone() {
                     let contents = buf.full_text();
@@ -244,11 +279,11 @@ fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         // ----- Sidebar navigation -----
         Action::NavUp => {
             nav(model, -1);
-            Vec::new()
+            post_nav_persist(model)
         }
         Action::NavDown => {
             nav(model, 1);
-            Vec::new()
+            post_nav_persist(model)
         }
         Action::Activate => activate_selection(model),
 
@@ -276,19 +311,25 @@ fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         }
         Action::SearchToggleRegex => {
             model.sidebar.search.use_regex = !model.sidebar.search.use_regex;
-            Vec::new()
+            rerun_search(model)
         }
         Action::SearchSubmit => {
             let s = &model.sidebar.search;
             let query = s.query.clone();
-            let use_regex = s.use_regex;
+            let (use_regex, match_case, search_hidden) =
+                (s.use_regex, s.match_case, s.search_hidden);
             if query.is_empty() {
                 return Vec::new();
             }
             match s.field {
                 SearchField::Query => {
                     model.focus = Focus::Sidebar;
-                    vec![Cmd::RunSearch { query, use_regex }]
+                    vec![Cmd::RunSearch {
+                        query,
+                        use_regex,
+                        match_case,
+                        search_hidden,
+                    }]
                 }
                 // Enter in the Replace field -> replace across all files.
                 SearchField::Replace => {
@@ -298,6 +339,8 @@ fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
                         query,
                         replace,
                         use_regex,
+                        match_case,
+                        search_hidden,
                     }]
                 }
             }
@@ -314,6 +357,48 @@ fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         }
         Action::GitCommitSubmit => git_commit(model),
 
+        // ----- In-editor find / replace -----
+        Action::OpenFind => open_find(model, false),
+        Action::OpenFindReplace => open_find(model, true),
+        Action::FindChar(c) => {
+            match model.find.field {
+                FindField::Query => {
+                    model.find.query.push(c);
+                    recompute_find(model);
+                }
+                FindField::Replace => model.find.replace.push(c),
+            }
+            Vec::new()
+        }
+        Action::FindBackspace => {
+            match model.find.field {
+                FindField::Query => {
+                    model.find.query.pop();
+                    recompute_find(model);
+                }
+                FindField::Replace => {
+                    model.find.replace.pop();
+                }
+            }
+            Vec::new()
+        }
+        Action::FindNext => {
+            find_step(model, 1);
+            Vec::new()
+        }
+        Action::FindPrev => {
+            find_step(model, -1);
+            Vec::new()
+        }
+        Action::FindToggleField => {
+            if model.find.replace_mode {
+                model.find.field = match model.find.field {
+                    FindField::Query => FindField::Replace,
+                    FindField::Replace => FindField::Query,
+                };
+            }
+            Vec::new()
+        }
         Action::PtyInput(bytes) => {
             if let Some(session) = model.terminal.session.as_mut() {
                 session.write(&bytes);
@@ -322,6 +407,7 @@ fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         }
         Action::Escape => {
             match model.focus {
+                Focus::Find => close_find(model),
                 Focus::Editor => {
                     if let Some(buf) = model.active_buffer_mut() {
                         buf.clear_selection();
@@ -350,6 +436,40 @@ fn edit(model: &mut Model, f: impl FnOnce(&mut Buffer)) -> Vec<Cmd> {
     Vec::new()
 }
 
+/// Applies the enabled format-on-save actions to the active buffer (before writing).
+fn apply_format_on_save(model: &mut Model) {
+    let s = &model.sidebar.settings;
+    if !s.format_on_save {
+        return;
+    }
+    let trim = s.trim_trailing_whitespace;
+    let final_nl = s.insert_final_newline;
+    if let Some(buf) = model.active_buffer_mut() {
+        let text = buf.full_text();
+        let formatted = format_text(&text, trim, final_nl);
+        // replace_all is a no-op when unchanged and bumps the version so the
+        // highlight cache refreshes on its own.
+        buf.replace_all(&formatted);
+    }
+    ensure_cursor_visible(model);
+}
+
+/// Trims trailing whitespace per line and/or ensures a single final newline.
+fn format_text(text: &str, trim: bool, final_nl: bool) -> String {
+    let mut result = if trim {
+        text.split('\n')
+            .map(|l| l.trim_end_matches([' ', '\t']))
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        text.to_string()
+    };
+    if final_nl && !result.is_empty() && !result.ends_with('\n') {
+        result.push('\n');
+    }
+    result
+}
+
 fn apply_motion(b: &mut Buffer, motion: Motion, extend: bool, page: usize) {
     match motion {
         Motion::Left => b.move_left(extend),
@@ -360,6 +480,8 @@ fn apply_motion(b: &mut Buffer, motion: Motion, extend: bool, page: usize) {
         Motion::End => b.move_end(extend),
         Motion::PageUp => b.move_page(-(page as isize), extend),
         Motion::PageDown => b.move_page(page as isize, extend),
+        Motion::WordLeft => b.move_word_left(extend),
+        Motion::WordRight => b.move_word_right(extend),
     }
 }
 
@@ -447,6 +569,14 @@ fn nav(model: &mut Model, delta: isize) {
             let sel = move_index(model.sidebar.themes.selected, delta, len);
             model.apply_theme(sel); // live theme change with the arrow keys
         }
+        Panel::Settings => {
+            let sel = move_index(
+                model.sidebar.settings.selected,
+                delta,
+                crate::app::model::SettingsState::COUNT,
+            );
+            model.sidebar.settings.selected = sel;
+        }
         Panel::Extensions => {}
     }
 }
@@ -483,9 +613,11 @@ fn activate_selection(model: &mut Model) -> Vec<Cmd> {
             }
         }
         Panel::Git => {
+            // Clicking a git entry opens the file as a diff-mode tab; changed lines
+            // get a green/red background.
             if let Some((entry, _)) = model.sidebar.git.entry_at(model.sidebar.git.selected) {
                 let path = entry.path.clone();
-                open_path(model, path)
+                open_diff(model, path)
             } else {
                 Vec::new()
             }
@@ -502,9 +634,28 @@ fn activate_selection(model: &mut Model) -> Vec<Cmd> {
         }
         Panel::Themes => {
             model.apply_theme(model.sidebar.themes.selected);
-            Vec::new()
+            persist_config(model)
+        }
+        Panel::Settings => {
+            let i = model.sidebar.settings.selected;
+            model.sidebar.settings.toggle(i);
+            persist_config(model)
         }
         Panel::Extensions => Vec::new(),
+    }
+}
+
+/// A Cmd that writes the current preferences (theme + settings) to disk.
+fn persist_config(model: &Model) -> Vec<Cmd> {
+    vec![Cmd::SaveConfig(model.config_snapshot())]
+}
+
+/// Persists after a keyboard nav that changes the theme live (Themes panel only).
+fn post_nav_persist(model: &Model) -> Vec<Cmd> {
+    if model.sidebar.active == Panel::Themes {
+        persist_config(model)
+    } else {
+        Vec::new()
     }
 }
 
@@ -525,8 +676,271 @@ fn git_commit(model: &mut Model) -> Vec<Cmd> {
     vec![Cmd::GitCommit(msg)]
 }
 
+// ----- In-editor find / replace -----
+
+/// Opens (or refocuses) the find widget. `replace` also shows the replace row.
+fn open_find(model: &mut Model, replace: bool) -> Vec<Cmd> {
+    if model.active_tab.is_none() {
+        return Vec::new();
+    }
+    model.find.open = true;
+    if replace {
+        model.find.replace_mode = true;
+    }
+    model.find.field = FindField::Query;
+    // Prefill the query from a single-line selection (VSCode behavior).
+    if let Some(sel) = model.active_buffer().and_then(|b| b.selected_text())
+        && !sel.is_empty()
+        && !sel.contains('\n')
+    {
+        model.find.query = sel;
+    }
+    model.focus = Focus::Find;
+    recompute_find(model);
+    Vec::new()
+}
+
+/// Closes the find widget and returns focus to the editor.
+fn close_find(model: &mut Model) {
+    model.find.open = false;
+    model.focus = Focus::Editor;
+}
+
+/// Recomputes match positions for the current query and selects the match at or
+/// after the cursor. Called whenever the query or the buffer changes.
+fn recompute_find(model: &mut Model) {
+    let matches = model
+        .active_buffer()
+        .map(|b| find_matches(&b.full_text(), &model.find.query))
+        .unwrap_or_default();
+    model.find.matches = matches;
+    if model.find.matches.is_empty() {
+        model.find.current = None;
+        if let Some(buf) = model.active_buffer_mut() {
+            buf.clear_selection();
+        }
+        return;
+    }
+    let cur = model.active_buffer().map(|b| b.cursor_char_index()).unwrap_or(0);
+    let idx = model
+        .find
+        .matches
+        .iter()
+        .position(|(s, _)| *s >= cur)
+        .unwrap_or(0);
+    model.find.current = Some(idx);
+    find_select_current(model);
+}
+
+/// Selects the current match in the buffer and scrolls it into view.
+fn find_select_current(model: &mut Model) {
+    let Some(i) = model.find.current else {
+        return;
+    };
+    let Some(&(s, e)) = model.find.matches.get(i) else {
+        return;
+    };
+    if let Some(buf) = model.active_buffer_mut() {
+        buf.select_char_range(s, e);
+    }
+    ensure_cursor_visible(model);
+}
+
+/// Moves to the next (delta=1) / previous (delta=-1) match, wrapping around.
+fn find_step(model: &mut Model, delta: isize) {
+    let n = model.find.matches.len();
+    if n == 0 {
+        return;
+    }
+    let cur = model.find.current.unwrap_or(0) as isize;
+    model.find.current = Some((cur + delta).rem_euclid(n as isize) as usize);
+    find_select_current(model);
+}
+
+/// Replaces the current match with the replacement text, then advances.
+fn find_replace_one(model: &mut Model) -> Vec<Cmd> {
+    let Some(i) = model.find.current else {
+        return Vec::new();
+    };
+    let Some(&(s, e)) = model.find.matches.get(i) else {
+        return Vec::new();
+    };
+    let rep = model.find.replace.clone();
+    if let Some(buf) = model.active_buffer_mut() {
+        buf.select_char_range(s, e);
+        buf.insert_str(&rep);
+    }
+    model.invalidate_highlight();
+    // The cursor now sits just past the replacement; recompute selects the next match.
+    recompute_find(model);
+    Vec::new()
+}
+
+/// Replaces every match in the active buffer in a single undo step.
+fn find_replace_all(model: &mut Model) -> Vec<Cmd> {
+    if model.find.query.is_empty() {
+        return Vec::new();
+    }
+    let rep = model.find.replace.clone();
+    let Some((new_text, count)) = model
+        .active_buffer()
+        .map(|b| replace_all_text(&b.full_text(), &model.find.query, &rep))
+    else {
+        return Vec::new();
+    };
+    if count > 0 {
+        if let Some(buf) = model.active_buffer_mut() {
+            buf.replace_all(&new_text);
+        }
+        model.invalidate_highlight();
+    }
+    model.status_message = format!("{count} replaced");
+    recompute_find(model);
+    Vec::new()
+}
+
+/// Case-insensitive (ASCII) literal match positions as [start, end) char indices.
+/// Matches are non-overlapping.
+fn find_matches(text: &str, query: &str) -> Vec<(usize, usize)> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let t: Vec<char> = text.chars().collect();
+    let q: Vec<char> = query.chars().collect();
+    let (tl, ql) = (t.len(), q.len());
+    let mut out = Vec::new();
+    if ql == 0 || ql > tl {
+        return out;
+    }
+    let ci_eq = |a: char, b: char| a.eq_ignore_ascii_case(&b);
+    let mut i = 0;
+    while i + ql <= tl {
+        if (0..ql).all(|k| ci_eq(t[i + k], q[k])) {
+            out.push((i, i + ql));
+            i += ql;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Builds a new string with every match of `query` replaced by `rep`.
+fn replace_all_text(text: &str, query: &str, rep: &str) -> (String, usize) {
+    let matches = find_matches(text, query);
+    if matches.is_empty() {
+        return (text.to_string(), 0);
+    }
+    let t: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut last = 0;
+    for &(s, e) in &matches {
+        out.extend(&t[last..s]);
+        out.push_str(rep);
+        last = e;
+    }
+    out.extend(&t[last..]);
+    (out, matches.len())
+}
+
+#[cfg(test)]
+mod find_tests {
+    use super::{find_matches, replace_all_text};
+
+    #[test]
+    fn matches_are_case_insensitive_and_non_overlapping() {
+        assert_eq!(find_matches("aXaXa", "x"), vec![(1, 2), (3, 4)]);
+        assert_eq!(find_matches("aaaa", "aa"), vec![(0, 2), (2, 4)]);
+        assert!(find_matches("abc", "").is_empty());
+        assert!(find_matches("abc", "abcd").is_empty());
+    }
+
+    #[test]
+    fn replace_all_rebuilds_text() {
+        assert_eq!(replace_all_text("foo Foo", "foo", "bar"), ("bar bar".to_string(), 2));
+        assert_eq!(replace_all_text("abc", "x", "y"), ("abc".to_string(), 0));
+    }
+}
+
+/// Re-runs the workspace search with the current query/options (after a
+/// checkbox toggle). No-op when the query is empty.
+fn rerun_search(model: &mut Model) -> Vec<Cmd> {
+    let s = &model.sidebar.search;
+    if s.query.is_empty() {
+        return Vec::new();
+    }
+    vec![Cmd::RunSearch {
+        query: s.query.clone(),
+        use_regex: s.use_regex,
+        match_case: s.match_case,
+        search_hidden: s.search_hidden,
+    }]
+}
+
+/// Search panel "Replace All": replaces across all files under the workspace.
+fn search_replace_all(model: &mut Model) -> Vec<Cmd> {
+    let s = &model.sidebar.search;
+    if s.query.is_empty() {
+        return Vec::new();
+    }
+    let (query, replace, use_regex, match_case, search_hidden) = (
+        s.query.clone(),
+        s.replace.clone(),
+        s.use_regex,
+        s.match_case,
+        s.search_hidden,
+    );
+    model.status_message = "Replacing…".to_string();
+    vec![Cmd::RunReplace {
+        query,
+        replace,
+        use_regex,
+        match_case,
+        search_hidden,
+    }]
+}
+
+/// Search panel "Replace": replaces only within the selected result's file.
+fn search_replace_one(model: &mut Model) -> Vec<Cmd> {
+    let s = &model.sidebar.search;
+    if s.query.is_empty() {
+        return Vec::new();
+    }
+    let Some(m) = s.results.get(s.selected) else {
+        return Vec::new();
+    };
+    let path = m.path.clone();
+    let (query, replace, use_regex, match_case) = (
+        s.query.clone(),
+        s.replace.clone(),
+        s.use_regex,
+        s.match_case,
+    );
+    model.status_message = "Replacing in file…".to_string();
+    vec![Cmd::RunReplaceFile {
+        path,
+        query,
+        replace,
+        use_regex,
+        match_case,
+    }]
+}
+
 fn open_path(model: &mut Model, path: PathBuf) -> Vec<Cmd> {
     open_path_at(model, path, 0)
+}
+
+/// Opens a file as a diff-mode tab (from the Git panel): reuses an existing diff
+/// tab for the path, otherwise loads a fresh one flagged via `pending_diff`.
+fn open_diff(model: &mut Model, path: PathBuf) -> Vec<Cmd> {
+    if let Some(i) = model.diff_tab_index_for(&path) {
+        model.active_tab = Some(i);
+        model.focus = Focus::Editor;
+        ensure_cursor_visible(model);
+        return Vec::new();
+    }
+    model.pending_diff = Some(path.clone());
+    vec![Cmd::ReadFile(path)]
 }
 
 fn open_path_at(model: &mut Model, path: PathBuf, line: usize) -> Vec<Cmd> {
@@ -680,6 +1094,18 @@ fn handle_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
                 model.drag = Some(DragTarget::TerminalBorder);
                 return Vec::new();
             }
+            // The find widget floats over the editor; intercept its clicks.
+            if model.find.open
+                && let Some(hit) = ui::find::hit(model, a.editor, x, y)
+            {
+                return handle_find_hit(model, hit);
+            }
+            // Scrollbar thumb drag.
+            if a.scrollbar.width > 0 && rect_contains(a.scrollbar, x, y) {
+                model.drag = Some(DragTarget::Scrollbar);
+                scrollbar_jump(model, &a, y);
+                return Vec::new();
+            }
             mouse_click(model, &a, x, y)
         }
         MouseEventKind::Drag(MouseButton::Left) => {
@@ -705,12 +1131,25 @@ fn handle_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
                     }
                     ensure_cursor_visible(model);
                 }
+                Some(DragTarget::Scrollbar) => scrollbar_jump(model, &a, y),
                 None => {}
             }
             Vec::new()
         }
         MouseEventKind::Up(MouseButton::Left) => {
             model.drag = None;
+            Vec::new()
+        }
+        // Middle-click anywhere on a tab closes it (like clicking its ✕).
+        MouseEventKind::Down(MouseButton::Middle) => {
+            if rect_contains(a.tabs, x, y)
+                && let Some(hit) = ui::tabs::tab_at(model, a.tabs, x)
+            {
+                let i = match hit {
+                    ui::tabs::TabHit::Select(i) | ui::tabs::TabHit::Close(i) => i,
+                };
+                close_tab(model, i);
+            }
             Vec::new()
         }
         MouseEventKind::ScrollDown => mouse_scroll(model, &a, x, y, 3),
@@ -721,6 +1160,37 @@ fn handle_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
 
 fn rect_contains(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
+}
+
+/// Handles a click on the find widget.
+fn handle_find_hit(model: &mut Model, hit: ui::find::FindHit) -> Vec<Cmd> {
+    use ui::find::FindHit;
+    match hit {
+        FindHit::QueryField => {
+            model.focus = Focus::Find;
+            model.find.field = FindField::Query;
+            Vec::new()
+        }
+        FindHit::ReplaceField => {
+            model.focus = Focus::Find;
+            model.find.field = FindField::Replace;
+            Vec::new()
+        }
+        FindHit::Prev => {
+            find_step(model, -1);
+            Vec::new()
+        }
+        FindHit::Next => {
+            find_step(model, 1);
+            Vec::new()
+        }
+        FindHit::Close => {
+            close_find(model);
+            Vec::new()
+        }
+        FindHit::ReplaceOne => find_replace_one(model),
+        FindHit::ReplaceAll => find_replace_all(model),
+    }
 }
 
 fn mouse_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
@@ -750,14 +1220,27 @@ fn mouse_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
     }
     if rect_contains(a.editor, x, y) {
         model.focus = Focus::Editor;
+        // Double-click (same cell within 400ms) selects the word under the cursor.
+        let now = std::time::Instant::now();
+        let double = model
+            .last_click
+            .map(|(t, cx, cy)| cx == x && cy == y && now.duration_since(t).as_millis() < 400)
+            .unwrap_or(false);
+        model.last_click = Some((now, x, y));
         if let Some(buf) = model.active_buffer_mut() {
             let line = buf.scroll_y + (y - a.editor.y) as usize;
             let col_vis = x.saturating_sub(a.editor_text_x) as usize;
             let col = buf.scroll_x + col_vis;
-            buf.set_cursor(Cursor { line, col }, false);
+            if double {
+                buf.select_word_at(Cursor { line, col });
+            } else {
+                buf.set_cursor(Cursor { line, col }, false);
+            }
         }
-        // Start a drag selection.
-        model.drag = Some(DragTarget::EditorSelect);
+        // A single click starts a drag selection; a double-click keeps the word.
+        if !double {
+            model.drag = Some(DragTarget::EditorSelect);
+        }
         ensure_cursor_visible(model);
         return Vec::new();
     }
@@ -821,26 +1304,77 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
                     Vec::new()
                 }
                 Some(GitHit::CommitButton) => git_commit(model),
+                Some(GitHit::Fetch) => {
+                    model.focus = Focus::Sidebar;
+                    if model.sidebar.git.has_remote {
+                        model.status_message = "Fetching…".to_string();
+                        vec![Cmd::GitFetch]
+                    } else {
+                        Vec::new()
+                    }
+                }
+                Some(GitHit::Pull) => {
+                    model.focus = Focus::Sidebar;
+                    // Disabled without an upstream to pull from.
+                    if model.sidebar.git.has_upstream {
+                        model.status_message = "Pulling…".to_string();
+                        vec![Cmd::GitPull]
+                    } else {
+                        Vec::new()
+                    }
+                }
+                Some(GitHit::Push) => {
+                    model.focus = Focus::Sidebar;
+                    // Disabled when there is nothing to push.
+                    if model.sidebar.git.can_push() {
+                        model.status_message = "Pushing…".to_string();
+                        vec![Cmd::GitPush]
+                    } else {
+                        Vec::new()
+                    }
+                }
                 None => Vec::new(),
             }
         }
         Panel::Search => {
-            // Row layout: title(0) query(1) replace(2) regex(3) count(4) results(5+).
-            let base = a.sidebar.y;
-            if y == base + 1 {
-                model.sidebar.search.field = SearchField::Query;
-                model.focus = Focus::SearchInput;
-            } else if y == base + 2 {
-                model.sidebar.search.field = SearchField::Replace;
-                model.focus = Focus::SearchInput;
-            } else if y == base + 3 {
-                model.sidebar.search.use_regex = !model.sidebar.search.use_regex;
-            } else if let Some(idx) = ui::sidebar::search_row_at(model, a.sidebar, y) {
-                model.sidebar.search.selected = idx;
-                model.focus = Focus::Sidebar;
-                return activate_selection(model);
-            } else {
-                model.focus = Focus::Sidebar;
+            use ui::sidebar::SearchHit;
+            match ui::sidebar::search_hit(model, a.sidebar, x, y) {
+                Some(SearchHit::QueryField) => {
+                    model.sidebar.search.field = SearchField::Query;
+                    model.focus = Focus::SearchInput;
+                }
+                Some(SearchHit::ReplaceField) => {
+                    model.sidebar.search.field = SearchField::Replace;
+                    model.focus = Focus::SearchInput;
+                }
+                Some(SearchHit::RegexToggle) => {
+                    model.sidebar.search.use_regex = !model.sidebar.search.use_regex;
+                    return rerun_search(model);
+                }
+                Some(SearchHit::MatchCaseToggle) => {
+                    model.sidebar.search.match_case = !model.sidebar.search.match_case;
+                    return rerun_search(model);
+                }
+                Some(SearchHit::SearchHiddenToggle) => {
+                    model.sidebar.search.search_hidden = !model.sidebar.search.search_hidden;
+                    return rerun_search(model);
+                }
+                Some(SearchHit::Prev) => {
+                    model.focus = Focus::Sidebar;
+                    nav(model, -1);
+                }
+                Some(SearchHit::Next) => {
+                    model.focus = Focus::Sidebar;
+                    nav(model, 1);
+                }
+                Some(SearchHit::ReplaceOne) => return search_replace_one(model),
+                Some(SearchHit::ReplaceAll) => return search_replace_all(model),
+                Some(SearchHit::Result(idx)) => {
+                    model.sidebar.search.selected = idx;
+                    model.focus = Focus::Sidebar;
+                    return activate_selection(model);
+                }
+                None => model.focus = Focus::Sidebar,
             }
             Vec::new()
         }
@@ -848,6 +1382,16 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
             if let Some(i) = ui::sidebar::theme_row_at(model, a.sidebar, y) {
                 model.focus = Focus::Sidebar;
                 model.apply_theme(i);
+                return persist_config(model);
+            }
+            Vec::new()
+        }
+        Panel::Settings => {
+            if let Some(i) = ui::sidebar::settings_row_at(a.sidebar, y) {
+                model.sidebar.settings.selected = i;
+                model.focus = Focus::Sidebar;
+                model.sidebar.settings.toggle(i);
+                return persist_config(model);
             }
             Vec::new()
         }
@@ -855,8 +1399,24 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
     }
 }
 
+/// Jumps the editor scroll so the clicked scrollbar row is centered in the viewport.
+fn scrollbar_jump(model: &mut Model, a: &ui::Areas, y: u16) {
+    let h = a.scrollbar.height as usize;
+    if h == 0 {
+        return;
+    }
+    let row = y.saturating_sub(a.scrollbar.y) as usize;
+    if let Some(buf) = model.active_buffer_mut() {
+        let n = buf.line_count().max(1);
+        let target = row * n / h;
+        let max = n.saturating_sub(h);
+        buf.scroll_y = target.saturating_sub(h / 2).min(max);
+    }
+}
+
 fn mouse_scroll(model: &mut Model, a: &ui::Areas, x: u16, y: u16, delta: isize) -> Vec<Cmd> {
-    if rect_contains(a.editor, x, y) {
+    let over_scrollbar = a.scrollbar.width > 0 && rect_contains(a.scrollbar, x, y);
+    if rect_contains(a.editor, x, y) || over_scrollbar {
         if let Some(buf) = model.active_buffer_mut() {
             let max = buf.line_count().saturating_sub(1);
             let new = (buf.scroll_y as isize + delta).clamp(0, max as isize) as usize;

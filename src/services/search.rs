@@ -13,36 +13,51 @@ pub struct SearchMatch {
     pub line: String,
 }
 
-/// Builds a case-insensitive Regex from `query`. If `use_regex` is false the
-/// pattern is escaped (plain-text search).
-fn build_regex(query: &str, use_regex: bool) -> Option<Regex> {
+/// Builds a Regex from `query`. If `use_regex` is false the pattern is escaped
+/// (plain-text search). Case-insensitive unless `match_case` is true.
+fn build_regex(query: &str, use_regex: bool, match_case: bool) -> Option<Regex> {
     let pattern = if use_regex {
         query.to_string()
     } else {
         regex::escape(query)
     };
     RegexBuilder::new(&pattern)
-        .case_insensitive(true)
+        .case_insensitive(!match_case)
         .build()
         .ok()
 }
 
+/// Builds the file walker. By default skips hidden (dot) files and .gitignore'd
+/// paths; when `search_hidden` is true it descends into both.
+fn walker(root: &Path, search_hidden: bool) -> ignore::Walk {
+    WalkBuilder::new(root)
+        .hidden(!search_hidden)
+        .git_ignore(!search_hidden)
+        .git_exclude(!search_hidden)
+        .ignore(!search_hidden)
+        .build()
+}
+
 /// Searches for `query` under `root` (plain/regex via `use_regex`).
 /// The number of results is capped by `limit` (blocking; call inside spawn_blocking).
-pub fn search(root: &Path, query: &str, use_regex: bool, limit: usize) -> Vec<SearchMatch> {
+pub fn search(
+    root: &Path,
+    query: &str,
+    use_regex: bool,
+    match_case: bool,
+    search_hidden: bool,
+    limit: usize,
+) -> Vec<SearchMatch> {
     let mut results = Vec::new();
     if query.is_empty() {
         return results;
     }
-    let re = match build_regex(query, use_regex) {
+    let re = match build_regex(query, use_regex, match_case) {
         Some(re) => re,
         None => return results,
     };
 
-    let walker = WalkBuilder::new(root)
-        .hidden(false)
-        .git_ignore(true)
-        .build();
+    let walker = walker(root, search_hidden);
 
     for entry in walker.flatten() {
         if results.len() >= limit {
@@ -78,6 +93,42 @@ pub fn search(root: &Path, query: &str, use_regex: bool, limit: usize) -> Vec<Se
     results
 }
 
+/// Replaces `query` matches with `replace` in a single file. Returns the number
+/// of replacements (0 if the file was unchanged). Blocking; call in spawn_blocking.
+pub fn replace_in_file(
+    path: &Path,
+    query: &str,
+    replace: &str,
+    use_regex: bool,
+    match_case: bool,
+) -> usize {
+    if query.is_empty() {
+        return 0;
+    }
+    let re = match build_regex(query, use_regex, match_case) {
+        Some(re) => re,
+        None => return 0,
+    };
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+    let count = re.find_iter(&content).count();
+    if count == 0 {
+        return 0;
+    }
+    let new = if use_regex {
+        re.replace_all(&content, replace)
+    } else {
+        re.replace_all(&content, NoExpand(replace))
+    };
+    if new != content && std::fs::write(path, new.as_bytes()).is_ok() {
+        count
+    } else {
+        0
+    }
+}
+
 /// Replaces `query` matches with `replace` in all files under `root`.
 /// Returns the paths of the changed files and the total number of replacements
 /// (blocking; call inside spawn_blocking).
@@ -89,21 +140,20 @@ pub fn replace_all(
     query: &str,
     replace: &str,
     use_regex: bool,
+    match_case: bool,
+    search_hidden: bool,
 ) -> (Vec<PathBuf>, usize) {
     let mut changed = Vec::new();
     let mut total = 0usize;
     if query.is_empty() {
         return (changed, total);
     }
-    let re = match build_regex(query, use_regex) {
+    let re = match build_regex(query, use_regex, match_case) {
         Some(re) => re,
         None => return (changed, total),
     };
 
-    let walker = WalkBuilder::new(root)
-        .hidden(false)
-        .git_ignore(true)
-        .build();
+    let walker = walker(root, search_hidden);
 
     for entry in walker.flatten() {
         let path = entry.path();

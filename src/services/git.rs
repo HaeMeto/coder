@@ -43,6 +43,14 @@ pub struct GitStatus {
     /// Changes in the working tree (unstaged).
     pub unstaged: Vec<GitEntry>,
     pub is_repo: bool,
+    /// Commits the local branch is ahead of its upstream.
+    pub ahead: usize,
+    /// Commits the local branch is behind its upstream.
+    pub behind: usize,
+    /// Whether the current branch has a configured upstream.
+    pub has_upstream: bool,
+    /// Whether the repository has at least one remote configured.
+    pub has_remote: bool,
 }
 
 /// Collects the status of the git repository under `root` (blocking; call inside spawn_blocking).
@@ -90,11 +98,41 @@ pub fn load_status(root: &Path) -> GitStatus {
         }
     }
 
+    let (ahead, behind, has_upstream) = ahead_behind(&repo);
+    let has_remote = repo.remotes().map(|r| !r.is_empty()).unwrap_or(false);
+
     GitStatus {
         branch,
         staged,
         unstaged,
         is_repo: true,
+        ahead,
+        behind,
+        has_upstream,
+        has_remote,
+    }
+}
+
+/// Ahead/behind commit counts vs the upstream, and whether an upstream is set.
+/// Local only (no network); the counts reflect the last fetch.
+fn ahead_behind(repo: &Repository) -> (usize, usize, bool) {
+    let head = match repo.head() {
+        Ok(h) if h.is_branch() => h,
+        _ => return (0, 0, false),
+    };
+    let Some(local_oid) = head.target() else {
+        return (0, 0, false);
+    };
+    let branch = git2::Branch::wrap(head);
+    let Ok(upstream) = branch.upstream() else {
+        return (0, 0, false);
+    };
+    let Some(up_oid) = upstream.get().target() else {
+        return (0, 0, true);
+    };
+    match repo.graph_ahead_behind(local_oid, up_oid) {
+        Ok((a, b)) => (a, b, true),
+        Err(_) => (0, 0, true),
     }
 }
 
@@ -218,6 +256,102 @@ pub fn revert(root: &Path, rel: &str) -> Result<(), git2::Error> {
     repo.checkout_index(None, Some(&mut co))
 }
 
+/// Runs a `git` CLI subcommand in `root`, returning the combined output on success
+/// or the error text on failure. Uses the CLI so it inherits the user's auth
+/// (credential helpers, ssh-agent) exactly like their shell.
+fn run_git(root: &Path, args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .map_err(|e| format!("could not run git: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let msg = format!("{stdout}{stderr}").trim().to_string();
+    if out.status.success() {
+        Ok(msg)
+    } else if msg.is_empty() {
+        Err("git command failed".to_string())
+    } else {
+        Err(msg)
+    }
+}
+
+/// `git fetch` — download remote refs (updates ahead/behind on the next status).
+pub fn fetch(root: &Path) -> Result<String, String> {
+    run_git(root, &["fetch"])
+}
+
+/// `git pull --ff-only` — fast-forward the current branch to its upstream.
+pub fn pull(root: &Path) -> Result<String, String> {
+    run_git(root, &["pull", "--ff-only"])
+}
+
+/// `git push` — publish local commits. Falls back to `-u origin HEAD` when the
+/// branch has no upstream yet.
+pub fn push(root: &Path) -> Result<String, String> {
+    match run_git(root, &["push"]) {
+        Err(e) if e.contains("upstream") || e.contains("set-upstream") => {
+            run_git(root, &["push", "-u", "origin", "HEAD"])
+        }
+        other => other,
+    }
+}
+
+/// Per-line marker in the editor gutter (working tree vs HEAD).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GutterKind {
+    /// Added or modified line (green bar).
+    Added,
+    /// A deletion boundary sits right at this line (red wedge).
+    Deleted,
+}
+
+/// The content of `path` at HEAD, or `None` if there is no repo / the file is not tracked.
+pub fn head_file(path: &Path) -> Option<String> {
+    let repo = Repository::discover(path.parent()?).ok()?;
+    let workdir = repo.workdir()?.to_path_buf();
+    let rel = path.strip_prefix(&workdir).ok()?;
+    let tree = repo.head().ok()?.peel_to_tree().ok()?;
+    let entry = tree.get_path(rel).ok()?;
+    let blob = entry.to_object(&repo).ok()?.peel_to_blob().ok()?;
+    Some(String::from_utf8_lossy(blob.content()).into_owned())
+}
+
+/// Per-line gutter markers for the difference between `old` (HEAD) and `new` (buffer).
+/// Pure (no IO): computes the diff in memory, safe to call from `update`.
+pub fn gutter_marks(old: &str, new: &str) -> Vec<(usize, GutterKind)> {
+    let mut opts = git2::DiffOptions::new();
+    opts.context_lines(0);
+    let patch = match git2::Patch::from_buffers(
+        old.as_bytes(),
+        None,
+        new.as_bytes(),
+        None,
+        Some(&mut opts),
+    ) {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    let mut marks: std::collections::HashMap<usize, GutterKind> = std::collections::HashMap::new();
+    for h in 0..patch.num_hunks() {
+        let Ok((hunk, _)) = patch.hunk(h) else { continue };
+        let new_start = hunk.new_start() as usize;
+        let new_lines = hunk.new_lines() as usize;
+        if new_lines > 0 {
+            // Added / modified lines -> green. new_start is 1-based.
+            for i in 0..new_lines {
+                marks.insert(new_start.saturating_sub(1) + i, GutterKind::Added);
+            }
+        } else if hunk.old_lines() > 0 {
+            // Pure deletion -> red wedge on the line before the removed block.
+            let anchor = new_start.saturating_sub(1);
+            marks.entry(anchor).or_insert(GutterKind::Deleted);
+        }
+    }
+    marks.into_iter().collect()
+}
+
 /// Commits the changes in the index.
 pub fn commit(root: &Path, message: &str) -> Result<(), git2::Error> {
     let repo = Repository::discover(root)?;
@@ -237,3 +371,39 @@ pub fn commit(root: &Path, message: &str) -> Result<(), git2::Error> {
 }
 
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kinds(old: &str, new: &str) -> Vec<(usize, GutterKind)> {
+        let mut v = gutter_marks(old, new);
+        v.sort_by_key(|(l, _)| *l);
+        v
+    }
+
+    #[test]
+    fn added_lines_are_green() {
+        // Insert a new line after line 1.
+        let m = kinds("a\nb\n", "a\nx\nb\n");
+        assert_eq!(m, vec![(1, GutterKind::Added)]);
+    }
+
+    #[test]
+    fn modified_line_is_green() {
+        let m = kinds("a\nb\nc\n", "a\nB\nc\n");
+        assert_eq!(m, vec![(1, GutterKind::Added)]);
+    }
+
+    #[test]
+    fn pure_deletion_marks_boundary_red() {
+        // Delete line 2 ("b"); wedge anchors on the line before it (index 0).
+        let m = kinds("a\nb\nc\n", "a\nc\n");
+        assert_eq!(m, vec![(0, GutterKind::Deleted)]);
+    }
+
+    #[test]
+    fn no_changes_no_marks() {
+        assert!(kinds("a\nb\n", "a\nb\n").is_empty());
+    }
+}

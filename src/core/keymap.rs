@@ -46,6 +46,15 @@ pub enum Action {
     GitCommitBackspace,
     GitCommitSubmit,
 
+    // In-editor find / replace widget
+    OpenFind,
+    OpenFindReplace,
+    FindChar(char),
+    FindBackspace,
+    FindNext,
+    FindPrev,
+    FindToggleField,
+
     // Terminal raw input
     PtyInput(Vec<u8>),
 
@@ -62,6 +71,8 @@ pub enum Motion {
     End,
     PageUp,
     PageDown,
+    WordLeft,
+    WordRight,
 }
 
 pub fn resolve(key: KeyEvent, focus: Focus) -> Option<Action> {
@@ -80,6 +91,10 @@ pub fn resolve(key: KeyEvent, focus: Focus) -> Option<Action> {
             KeyCode::Char('f') if shift => return Some(Action::SelectPanel(Panel::Search)),
             KeyCode::Char('g') if shift => return Some(Action::SelectPanel(Panel::Git)),
             KeyCode::Char('x') if shift => return Some(Action::SelectPanel(Panel::Extensions)),
+            // Ctrl+F: in-editor find. (Ctrl+Shift+F above is the workspace search panel.)
+            KeyCode::Char('f') => return Some(Action::OpenFind),
+            KeyCode::Char('h') => return Some(Action::OpenFindReplace),
+            KeyCode::Char(',') => return Some(Action::SelectPanel(Panel::Settings)),
             KeyCode::Tab => {
                 return Some(if shift {
                     Action::PrevTab
@@ -97,6 +112,20 @@ pub fn resolve(key: KeyEvent, focus: Focus) -> Option<Action> {
         Focus::Sidebar => resolve_sidebar(key),
         Focus::SearchInput => resolve_search(key),
         Focus::GitCommit => resolve_git_commit(key),
+        Focus::Find => resolve_find(key, shift),
+    }
+}
+
+fn resolve_find(key: KeyEvent, shift: bool) -> Option<Action> {
+    match key.code {
+        KeyCode::Tab => Some(Action::FindToggleField), // query <-> replace
+        KeyCode::Char(c) => Some(Action::FindChar(c)),
+        KeyCode::Backspace => Some(Action::FindBackspace),
+        KeyCode::Enter => Some(if shift { Action::FindPrev } else { Action::FindNext }),
+        KeyCode::Down => Some(Action::FindNext),
+        KeyCode::Up => Some(Action::FindPrev),
+        KeyCode::Esc => Some(Action::Escape),
+        _ => None,
     }
 }
 
@@ -119,6 +148,9 @@ fn resolve_editor(key: KeyEvent, ctrl: bool, shift: bool) -> Option<Action> {
             KeyCode::Char('z') => Some(Action::Undo),
             KeyCode::Char('y') => Some(Action::Redo),
             KeyCode::Char('a') => Some(Action::SelectAll),
+            // Ctrl+Left/Right: jump by word (Shift extends the selection).
+            KeyCode::Left => Some(Action::Move(Motion::WordLeft, shift)),
+            KeyCode::Right => Some(Action::Move(Motion::WordRight, shift)),
             _ => None,
         };
     }

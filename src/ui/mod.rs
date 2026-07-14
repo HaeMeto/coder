@@ -3,6 +3,7 @@
 pub mod activity_bar;
 pub mod dialog;
 pub mod editor;
+pub mod find;
 pub mod sidebar;
 pub mod statusbar;
 pub mod tabs;
@@ -22,6 +23,8 @@ pub struct Areas {
     pub sidebar_border_x: u16,
     pub tabs: Rect,
     pub editor: Rect,
+    /// Editor scrollbar column (rightmost); zero width when there's no room.
+    pub scrollbar: Rect,
     pub terminal: Rect,
     pub terminal_open: bool,
     /// y coordinate of the terminal top edge (drag-resize handle).
@@ -38,7 +41,9 @@ pub const ACTIVITY_WIDTH: u16 = 4;
 pub fn gutter_width(model: &Model) -> u16 {
     let lines = model.active_buffer().map(|b| b.line_count()).unwrap_or(1);
     let digits = lines.to_string().len() as u16;
-    (digits + 2).max(4)
+    // One extra column for the git change marker when the file is tracked.
+    let git = if model.git_gutter() { 1 } else { 0 };
+    (digits + 2).max(4) + git
 }
 
 /// Computes the layout. view() and mouse routing use the same result.
@@ -75,10 +80,20 @@ pub fn compute_areas(model: &Model, area: Rect) -> Areas {
         (editor_col, Rect { height: 0, ..editor_col })
     };
 
-    let [tabs, editor] =
+    let [tabs, editor_full] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(editor_body);
 
     let gutter_w = gutter_width(model);
+
+    // Reserve the rightmost column for the scrollbar when there is room.
+    let (editor, scrollbar) = if editor_full.width > gutter_w + 1 {
+        let [e, sb] =
+            Layout::horizontal([Constraint::Min(1), Constraint::Length(1)]).areas(editor_full);
+        (e, sb)
+    } else {
+        (editor_full, Rect { width: 0, ..editor_full })
+    };
+
     let editor_text_x = editor.x + gutter_w;
 
     Areas {
@@ -88,6 +103,7 @@ pub fn compute_areas(model: &Model, area: Rect) -> Areas {
         sidebar_border_x: editor_col.x,
         tabs,
         editor,
+        scrollbar,
         terminal,
         terminal_open: model.layout.terminal_open,
         terminal_border_y: terminal.y,
@@ -111,6 +127,11 @@ pub fn view(frame: &mut Frame, model: &Model) {
     }
     tabs::render(frame, a.tabs, model);
     editor::render(frame, a.editor, model, a.gutter_w);
+    if a.scrollbar.width > 0 {
+        editor::render_scrollbar(frame, a.scrollbar, model);
+    }
+    // The find widget floats over the top-right of the editor.
+    find::render(frame, a.editor, model);
     if a.terminal_open && a.terminal.height > 0 {
         terminal::render(frame, a.terminal, model);
     }

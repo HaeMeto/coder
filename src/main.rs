@@ -89,6 +89,7 @@ async fn run(terminal: &mut Tui, root: std::path::PathBuf) -> Result<()> {
 
     loop {
         model.refresh_highlight();
+        model.refresh_git_marks();
         terminal.draw(|f| ui::view(f, &model))?;
         if model.should_quit {
             break;
