@@ -256,6 +256,13 @@ impl Highlighter {
         }
     }
 
+    /// Drops the cached highlight so the next `highlight()` recomputes. Needed
+    /// when the buffer's content is replaced without advancing its version
+    /// (e.g. a disk reload rebuilds the buffer back to version 0).
+    pub fn invalidate(&mut self) {
+        self.cached_version = None;
+    }
+
     fn syntax(&self) -> &'static SyntaxReference {
         let ss = syntax_set();
         ss.find_syntax_by_name(&self.syntax_name)

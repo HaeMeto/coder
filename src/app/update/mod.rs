@@ -137,12 +137,13 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         }
         Msg::DiskChanged(path) => {
             // A change inside `.git` (external `git commit`/stage/checkout, or the
-            // embedded terminal) moves HEAD/index/refs — refresh the git panel so
-            // the branch, ahead/behind counts and the fetch/pull/push buttons
-            // reflect it. Reloading only open buffers would leave the panel stale.
+            // embedded terminal) moves HEAD/index/refs. A change to a working-tree
+            // file alters its status too. Refresh the git panel so the branch,
+            // ahead/behind counts, buttons and the Changes list stay live — but
+            // only while it is open, to avoid running `git status` on every keystroke.
             let in_git = path.components().any(|c| c.as_os_str() == ".git");
             let mut cmds = reload_if_clean(model, path);
-            if in_git {
+            if in_git || model.sidebar.active == Panel::Git {
                 cmds.push(Cmd::LoadGitStatus);
             }
             cmds
@@ -225,6 +226,9 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                 if let Ok(text) = std::fs::read_to_string(path) {
                     for i in model.all_tabs_for(path) {
                         model.tabs[i].buffer = Buffer::new(Some(path.clone()), &text);
+                        // Version restarts at 0; drop the highlighter cache so the
+                        // replaced text is re-highlighted (see apply_reload).
+                        model.tabs[i].highlighter.invalidate();
                     }
                 }
             }
