@@ -486,7 +486,7 @@ pub struct GitLayout {
     /// Scrollable list height.
     pub list_h: u16,
     pub offset: usize,
-    /// y of the fetch/pull/push button row (bottom footer).
+    /// y of the fetch/pull/push button row (just above the commit box).
     pub actions_y: u16,
     /// Top y of the commit message input field (height `COMMIT_INPUT_H`).
     pub input_top: u16,
@@ -498,8 +498,8 @@ pub struct GitLayout {
 
 /// Computes the Git panel layout. `area` is the full sidebar area (title included).
 ///
-/// Top→bottom: branch row, blank, commit input box, commit button, blank, then
-/// the scrollable change list. The fetch/pull/push row sits at the very bottom.
+/// Top→bottom: branch row, blank, fetch/pull/push row, commit input box, commit
+/// button, blank, then the scrollable change list (which runs to the bottom).
 pub fn git_layout(model: &Model, area: Rect) -> GitLayout {
     let g = &model.sidebar.git;
     let mut rows = Vec::new();
@@ -528,13 +528,15 @@ pub fn git_layout(model: &Model, area: Rect) -> GitLayout {
     let branch_shown = g.is_repo && g.branch.is_some();
     let branch_y = top;
 
-    // Fixed top block (only with a repo): branch, blank, input box, button, blank.
+    // Fixed top block (only with a repo): branch, blank, fetch/pull/push row,
+    // input box, button, blank. The change list then runs to the bottom.
     let (content_y, input_top, button_y, actions_y, list_h) = if has_box {
-        let input_top = top + if branch_shown { 1 } else { 0 } + 1; // branch + blank
+        let actions_y = top + if branch_shown { 1 } else { 0 } + 1; // branch + blank
+        let input_top = actions_y + 1; // right below the fetch/pull/push row
         let button_y = input_top + COMMIT_INPUT_H;
         let content_y = button_y + 2; // blank, then the change list
-        let actions_y = area.y + area.height.saturating_sub(1); // bottom footer
-        let list_h = actions_y.saturating_sub(content_y);
+        let bottom = area.y + area.height;
+        let list_h = bottom.saturating_sub(content_y);
         (content_y, input_top, button_y, actions_y, list_h)
     } else {
         (top, 0, 0, 0, area.height.saturating_sub(1))
@@ -880,8 +882,8 @@ pub fn git_hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<GitHit> {
         if y >= l.input_top && y < l.input_top + COMMIT_INPUT_H {
             return Some(GitHit::CommitInput);
         }
-        if y >= l.actions_y {
-            return None; // separator / blank
+        if y < l.content_y {
+            return None; // branch / blanks in the fixed top block
         }
     }
     if y < l.content_y || y >= l.content_y + l.list_h {

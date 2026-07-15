@@ -135,7 +135,18 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             }
             Vec::new()
         }
-        Msg::DiskChanged(path) => reload_if_clean(model, path),
+        Msg::DiskChanged(path) => {
+            // A change inside `.git` (external `git commit`/stage/checkout, or the
+            // embedded terminal) moves HEAD/index/refs — refresh the git panel so
+            // the branch, ahead/behind counts and the fetch/pull/push buttons
+            // reflect it. Reloading only open buffers would leave the panel stale.
+            let in_git = path.components().any(|c| c.as_os_str() == ".git");
+            let mut cmds = reload_if_clean(model, path);
+            if in_git {
+                cmds.push(Cmd::LoadGitStatus);
+            }
+            cmds
+        }
         Msg::FileReloaded { path, text } => apply_reload(model, path, text),
         Msg::FileSaved { path } => {
             for i in model.all_tabs_for(&path) {
