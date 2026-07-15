@@ -210,7 +210,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
     // Branch row at the very top.
     if l.branch_shown {
         let branch = Paragraph::new(Line::from(Span::styled(
-            format!("{}", model.sidebar.git.branch.clone().unwrap_or_default()),
+            model.sidebar.git.branch.clone().unwrap_or("".to_string()),
             Style::new().fg(th.fg),
         )))
         .style(Style::new().bg(th.bg_alt));
