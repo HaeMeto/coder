@@ -1,426 +1,16 @@
-//! Sidebar panels: file tree, search, git, extensions.
+//! Git panel: change tree, commit box, fetch/pull/push actions.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 
-use crate::app::model::{Focus, GitStatus, Model, Panel, SettingsState};
+use crate::app::model::{Focus, GitStatus, Model};
 use crate::services::git::{GitEntry, GitState};
 use crate::ui::text_input::TextInput;
 
-/// Insets a rect by 1 cell on every side (the sidebar's inner padding). Render
-/// and all hit-testing pass the sidebar area through this so they stay aligned.
-fn content_rect(area: Rect) -> Rect {
-    Rect {
-        x: area.x + 1,
-        y: area.y + 1,
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
-    }
-}
-
-/// List scroll offset — keeps the selected item visible.
-pub fn list_scroll(selected: usize, len: usize, height: usize) -> usize {
-    if height == 0 || len <= height {
-        return 0;
-    }
-    if selected < height {
-        0
-    } else {
-        (selected + 1).saturating_sub(height).min(len - height)
-    }
-}
-
-pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
-    let block = Block::new().style(Style::new().bg(model.theme.bg_alt));
-    frame.render_widget(block, area);
-    // 1-cell padding on every side; everything below draws inside the inset area.
-    let area = content_rect(area);
-
-    // Title row.
-    let title = Paragraph::new(Line::from(Span::styled(
-        format!(" {}", model.sidebar.active.title()),
-        Style::new().fg(model.theme.fg_dim).add_modifier(Modifier::BOLD),
-    )))
-    .style(Style::new().bg(model.theme.bg_alt));
-    let title_area = Rect { height: 1, ..area };
-    frame.render_widget(title, title_area);
-
-    let content = Rect {
-        y: area.y + title_area.height,
-        height: area.height.saturating_sub(title_area.height),
-        ..area
-    };
-
-    match model.sidebar.active {
-        Panel::Files => render_files(frame, content, model),
-        Panel::Search => render_search(frame, content, model),
-        // The Git panel uses the full sidebar area (title + list + commit box).
-        Panel::Git => render_git(frame, area, model),
-        Panel::Extensions => render_extensions(frame, content, model),
-        Panel::Themes => render_themes(frame, content, model),
-        Panel::Settings => render_settings(frame, content, model),
-    }
-}
-
-fn render_settings(frame: &mut Frame, area: Rect, model: &Model) {
-    let s = &model.sidebar.settings;
-    let th = &model.theme;
-
-    let mut lines: Vec<Line> = Vec::new();
-    for i in 0..SettingsState::COUNT {
-        let selected = i == s.selected;
-        let checked = s.value(i);
-        let checkbox = if checked { "[x]" } else { "[ ]" };
-        let box_style = Style::new().fg(if checked { th.accent } else { th.fg_dim });
-        let name_style = if selected {
-            Style::new().fg(th.fg)
-        } else {
-            Style::new().fg(th.fg_dim)
-        };
-        let line_style = if selected && model.focus == Focus::Sidebar {
-            Style::new().bg(th.selection)
-        } else {
-            Style::new().bg(th.bg_alt)
-        };
-        lines.push(
-            Line::from(vec![
-                Span::styled(format!(" {checkbox} "), box_style),
-                Span::styled(SettingsState::label(i).to_string(), name_style),
-            ])
-            .style(line_style),
-        );
-    }
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        " ⏎/click toggles · applied on save",
-        Style::new().fg(th.fg_dim),
-    )));
-
-    let p = Paragraph::new(lines).style(Style::new().bg(th.bg_alt));
-    frame.render_widget(p, area);
-}
-
-/// Returns the settings row index for a mouse y. `area` is the full sidebar (title included).
-pub fn settings_row_at(area: Rect, y: u16) -> Option<usize> {
-    let area = content_rect(area);
-    let content_y = area.y + 1;
-    if y < content_y {
-        return None;
-    }
-    let idx = (y - content_y) as usize;
-    if idx < SettingsState::COUNT {
-        Some(idx)
-    } else {
-        None
-    }
-}
-
-fn render_themes(frame: &mut Frame, area: Rect, model: &Model) {
-    let t = &model.sidebar.themes;
-    let height = area.height as usize;
-    let offset = list_scroll(t.selected, t.names.len(), height);
-
-    let mut lines: Vec<Line> = Vec::new();
-    for (i, name) in t.names.iter().enumerate().skip(offset).take(height) {
-        let selected = i == t.selected;
-        let marker = if i == t.selected { "● " } else { "  " };
-        let name_style = if selected {
-            Style::new().fg(model.theme.fg)
-        } else {
-            Style::new().fg(model.theme.fg_dim)
-        };
-        let line_style = if selected && model.focus == Focus::Sidebar {
-            Style::new().bg(model.theme.selection)
-        } else {
-            Style::new().bg(model.theme.bg_alt)
-        };
-        lines.push(
-            Line::from(vec![
-                Span::styled(marker, Style::new().fg(model.theme.accent)),
-                Span::styled(name.clone(), name_style),
-            ])
-            .style(line_style),
-        );
-    }
-    let p = Paragraph::new(lines).style(Style::new().bg(model.theme.bg_alt));
-    frame.render_widget(p, area);
-}
-
-/// Returns the row index in the theme list based on the mouse y.
-pub fn theme_row_at(model: &Model, area: Rect, y: u16) -> Option<usize> {
-    // area is the whole sidebar (including the title): content starts at area.y+1.
-    let area = content_rect(area);
-    let content_y = area.y + 1;
-    if y < content_y {
-        return None;
-    }
-    let len = model.sidebar.themes.names.len();
-    let height = area.height.saturating_sub(1) as usize;
-    let offset = list_scroll(model.sidebar.themes.selected, len, height);
-    let idx = offset + (y - content_y) as usize;
-    if idx < len { Some(idx) } else { None }
-}
-
-fn render_files(frame: &mut Frame, area: Rect, model: &Model) {
-    let rows = model.sidebar.files.visible_rows();
-    let height = area.height as usize;
-    let offset = list_scroll(model.sidebar.files.selected, rows.len(), height);
-
-    // Path of the file open in the active tab, to mark its row in the tree.
-    let active_path = model.active_buffer().and_then(|b| b.path.clone());
-
-    let mut lines: Vec<Line> = Vec::new();
-    for (i, row) in rows.iter().enumerate().skip(offset).take(height) {
-        let selected = i == model.sidebar.files.selected && model.focus == Focus::Sidebar;
-        let is_active = !row.is_dir && active_path.as_deref() == Some(row.path.as_path());
-        let indent = "  ".repeat(row.depth);
-        let icon = if row.is_dir {
-            if row.expanded { "▾ " } else { "▸ " }
-        } else {
-            "  "
-        };
-        let name_style = if row.is_dir {
-            Style::new().fg(model.theme.fg)
-        } else {
-            Style::new().fg(model.theme.fg_dim)
-        };
-        // Keyboard selection wins; otherwise the active file gets a lighter bg.
-        let line_style = if selected {
-            Style::new().bg(model.theme.selection)
-        } else if is_active {
-            Style::new().fg(model.theme.fg).bg(model.theme.active_row_bg())
-        } else {
-            Style::new().bg(model.theme.bg_alt)
-        };
-        lines.push(
-            Line::from(vec![
-                Span::raw(indent),
-                Span::styled(icon, Style::new().fg(model.theme.fg_dim)),
-                Span::styled(row.name.clone(), name_style),
-            ])
-            .style(line_style),
-        );
-    }
-    let p = Paragraph::new(lines).style(Style::new().bg(model.theme.bg_alt));
-    frame.render_widget(p, area);
-}
-
-/// Returns the visible row index in the file tree based on the mouse y.
-pub fn file_row_at(model: &Model, area: Rect, y: u16) -> Option<usize> {
-    // here area is the content region (title not included): sidebar starts at area.y+1.
-    let area = content_rect(area);
-    let content_y = area.y + 1;
-    if y < content_y {
-        return None;
-    }
-    let rows_len = model.sidebar.files.visible_rows().len();
-    let height = area.height.saturating_sub(1) as usize;
-    let offset = list_scroll(model.sidebar.files.selected, rows_len, height);
-    let idx = offset + (y - content_y) as usize;
-    if idx < rows_len { Some(idx) } else { None }
-}
-
-/// Number of fixed rows above the result list in the search panel: query,
-/// prev/next, blank, replace, replace buttons, blank, regex, match-case,
-/// search-hidden, count.
-const SEARCH_HEADER_ROWS: u16 = 10;
-
-
-/// Builds a two-button row (left | gap | right) sized to `width`; each cell is
-/// accent-colored when enabled, dim otherwise. Splits match `two_button_hit`.
-fn two_button_line(
-    th: &crate::core::theme::Theme,
-    width: usize,
-    left: &str,
-    left_on: bool,
-    right: &str,
-    right_on: bool,
-) -> Line<'static> {
-    let lw = width.saturating_sub(1) / 2;
-    let rw = width.saturating_sub(lw + 1);
-    let cell = |label: &str, on: bool, w: usize| -> Span<'static> {
-        let (fg, bg) = if on {
-            (th.statusbar_fg, th.accent)
-        } else {
-            (th.fg_dim, th.tab_inactive_bg)
-        };
-        Span::styled(format!("{label:^w$}"), Style::new().fg(fg).bg(bg))
-    };
-    Line::from(vec![
-        cell(left, left_on, lw),
-        Span::styled(" ", Style::new().bg(th.bg_alt)),
-        cell(right, right_on, rw),
-    ])
-}
-
-/// Which half (if any) of a two-button row column `x` falls into: `Some(false)`
-/// = left, `Some(true)` = right, `None` = the gap.
-fn two_button_hit(area_x: u16, width: u16, x: u16) -> Option<bool> {
-    let rel = x.checked_sub(area_x)?;
-    let lw = width.saturating_sub(1) / 2;
-    if rel < lw {
-        Some(false)
-    } else if rel == lw {
-        None // gap
-    } else {
-        Some(true)
-    }
-}
-
-fn render_search(frame: &mut Frame, area: Rect, model: &Model) {
-    use crate::app::model::SearchField;
-    let s = &model.sidebar.search;
-    let th = &model.theme;
-    let input_focused = model.focus == Focus::SearchInput;
-    let query_active = input_focused && s.field == SearchField::Query;
-    let replace_active = input_focused && s.field == SearchField::Replace;
-    let width = area.width as usize;
-
-    let has_results = !s.results.is_empty();
-    let has_query = !s.query.is_empty();
-
-    // A checkbox row: "[x] Label", accent when on, dim when off.
-    let check = |on: bool, label: &str| -> Line<'static> {
-        let box_ = if on { "[x]" } else { "[ ]" };
-        Line::from(Span::styled(
-            format!(" {box_} {label}"),
-            Style::new().fg(if on { th.accent } else { th.fg_dim }),
-        ))
-    };
-    // The two input rows are drawn by the shared TextInput widget as an overlay
-    // (see below); reserve blank sunken rows for them here.
-    let blank_input = || Line::from(Span::styled(" ".repeat(width), Style::new().bg(th.input_bg())));
-    let mut lines: Vec<Line> = vec![
-        // 0) Search input (overlaid).
-        blank_input(),
-        Span::from("").into(),
-        // 1) Prev / Next buttons.
-        two_button_line(th, width, "Prev", has_results, "Next", has_results),
-        Span::from("").into(),
-        // 3) Replace input (overlaid).
-        blank_input(),
-        Span::from("").into(),
-        // 4) Replace / Replace All buttons.
-        two_button_line(th, width, "Replace", has_query && has_results, "Replace All", has_query),
-        Span::from("").into(),
-        // 6) Regex checkbox (+ shortcut hint).
-        Line::from(vec![
-            Span::styled(
-                format!(" {} RegExp", if s.use_regex { "[x]" } else { "[ ]" }),
-                Style::new().fg(if s.use_regex { th.accent } else { th.fg_dim }),
-            ),
-        ]),
-        // 7) Match Case checkbox.
-        check(s.match_case, "Match Case"),
-        // 8) Search Ignored & Hidden Files checkbox.
-        check(s.search_hidden, "Search Ignored & Hidden"),
-        // 9) Result count.
-        Line::from(Span::styled(
-            format!("- {} results: -", s.results.len()),
-            Style::new().fg(th.fg_dim),
-        )),
-    ];
-
-    // 6+) Results.
-    let list_h = (area.height as usize).saturating_sub(SEARCH_HEADER_ROWS as usize);
-    let offset = list_scroll(s.selected, s.results.len(), list_h);
-    for (i, m) in s.results.iter().enumerate().skip(offset).take(list_h) {
-        let selected = i == s.selected && model.focus == Focus::Sidebar;
-        let style = if selected {
-            Style::new().bg(th.selection).fg(th.fg)
-        } else {
-            Style::new().bg(th.bg_alt).fg(th.fg_dim)
-        };
-        lines.push(
-            Line::from(vec![
-                Span::styled(format!("{}:{} ", m.rel, m.line_no), Style::new().fg(th.accent)),
-                Span::raw(m.line.trim().to_string()),
-            ])
-            .style(style),
-        );
-    }
-    let p = Paragraph::new(lines).style(Style::new().bg(th.bg_alt));
-    frame.render_widget(p, area);
-
-    // Overlay the query/replace inputs on their reserved rows (indices 0 and 4).
-    let input_row = |dy: u16| Rect { x: area.x, y: area.y + dy, width: area.width, height: 1 };
-    frame.render_widget(
-        TextInput::new(&s.query, th)
-            .placeholder("Find...")
-            .focused(query_active)
-            .pad(1),
-        input_row(0),
-    );
-    frame.render_widget(
-        TextInput::new(&s.replace, th)
-            .placeholder("Replace...")
-            .focused(replace_active)
-            .pad(1),
-        input_row(4),
-    );
-}
-
-/// Target of a mouse click in the search panel.
-pub enum SearchHit {
-    QueryField,
-    ReplaceField,
-    RegexToggle,
-    MatchCaseToggle,
-    SearchHiddenToggle,
-    Prev,
-    Next,
-    ReplaceOne,
-    ReplaceAll,
-    Result(usize),
-}
-
-/// Maps a mouse (x, y) to a search-panel target. `area` is the full sidebar area.
-pub fn search_hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<SearchHit> {
-    let area = content_rect(area);
-    let s = &model.sidebar.search;
-    let base = area.y; // title row
-    // Physical rows below the title (see render_search): query(1), prev/next(2),
-    // blank(3), replace(4), replace buttons(5), blank(6), regex(7),
-    // match-case(8), search-hidden(9), count(10).
-    if y == base + 1 {
-        return Some(SearchHit::QueryField);
-    }
-    if y == base + 2 {
-        return two_button_hit(area.x, area.width, x)
-            .map(|right| if right { SearchHit::Next } else { SearchHit::Prev });
-    }
-    if y == base + 4 {
-        return Some(SearchHit::ReplaceField);
-    }
-    if y == base + 5 {
-        return two_button_hit(area.x, area.width, x)
-            .map(|right| if right { SearchHit::ReplaceAll } else { SearchHit::ReplaceOne });
-    }
-    if y == base + 7 {
-        return Some(SearchHit::RegexToggle);
-    }
-    if y == base + 8 {
-        return Some(SearchHit::MatchCaseToggle);
-    }
-    if y == base + 9 {
-        return Some(SearchHit::SearchHiddenToggle);
-    }
-    let start = base + 1 + SEARCH_HEADER_ROWS;
-    if y < start {
-        return None;
-    }
-    let list_h = area.height.saturating_sub(1 + SEARCH_HEADER_ROWS) as usize;
-    let offset = list_scroll(s.selected, s.results.len(), list_h);
-    let idx = offset + (y - start) as usize;
-    if idx < s.results.len() {
-        Some(SearchHit::Result(idx))
-    } else {
-        None
-    }
-}
+use super::{list_scroll, panel_area};
 
 /// Type of a scrollable content row in the Git panel.
 #[derive(Clone)]
@@ -496,7 +86,8 @@ pub struct GitLayout {
     pub has_box: bool,
 }
 
-/// Computes the Git panel layout. `area` is the full sidebar area (title included).
+/// Computes the Git panel layout. `area` is the panel **body** region
+/// (`panel_area`), i.e. below the sidebar title + spacer.
 ///
 /// Top→bottom: branch row, blank, fetch/pull/push row, commit input box, commit
 /// button, blank, then the scrollable change list (which runs to the bottom).
@@ -524,7 +115,7 @@ pub fn git_layout(model: &Model, area: Rect) -> GitLayout {
     }
 
     let has_box = g.is_repo;
-    let top = area.y + 1;
+    let top = area.y;
     let branch_shown = g.is_repo && g.branch.is_some();
     let branch_y = top;
 
@@ -539,7 +130,7 @@ pub fn git_layout(model: &Model, area: Rect) -> GitLayout {
         let list_h = bottom.saturating_sub(content_y);
         (content_y, input_top, button_y, actions_y, list_h)
     } else {
-        (top, 0, 0, 0, area.height.saturating_sub(1))
+        (top, 0, 0, 0, area.height)
     };
 
     let sel_pos = selected_row_pos(g, &rows);
@@ -611,7 +202,7 @@ fn selected_row_pos(g: &GitStatus, rows: &[GitRowKind]) -> usize {
     0
 }
 
-fn render_git(frame: &mut Frame, area: Rect, model: &Model) {
+pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
     let l = git_layout(model, area);
     let width = area.width as usize;
     let th = &model.theme;
@@ -619,8 +210,8 @@ fn render_git(frame: &mut Frame, area: Rect, model: &Model) {
     // Branch row at the very top.
     if l.branch_shown {
         let branch = Paragraph::new(Line::from(Span::styled(
-            format!(" ⎇ {}", model.sidebar.git.branch.clone().unwrap_or_default()),
-            Style::new().fg(th.accent).add_modifier(Modifier::BOLD),
+            format!("{}", model.sidebar.git.branch.clone().unwrap_or_default()),
+            Style::new().fg(th.fg),
         )))
         .style(Style::new().bg(th.bg_alt));
         frame.render_widget(branch, Rect { y: l.branch_y, height: 1, ..area });
@@ -719,11 +310,11 @@ fn git_row_line(model: &Model, kind: &GitRowKind, width: usize) -> Line<'static>
         ])
         .style(Style::new().bg(th.bg_alt)),
         GitRowKind::Staged { idx, depth } => {
-            let sel = model.focus == Focus::Sidebar && g.selected == *idx;
+            let sel = g.selected == *idx;
             entry_line(model, &g.staged[*idx], true, sel, *depth, width)
         }
         GitRowKind::Unstaged { idx, depth } => {
-            let sel = model.focus == Focus::Sidebar && g.selected == g.staged.len() + *idx;
+            let sel = g.selected == g.staged.len() + *idx;
             entry_line(model, &g.unstaged[*idx], false, sel, *depth, width)
         }
     }
@@ -780,7 +371,7 @@ fn entry_line(
     // indent + prefix (3) + name + suffix (4) = width
     let avail = width.saturating_sub(indent.len() + 7);
     let name_field = format!("{:<avail$}", fit_path(name, avail));
-    let line_bg = if selected { th.selection } else { th.bg_alt };
+    let line_bg = if selected { th.selected_bg() } else { th.bg_alt };
 
     let mut spans = vec![
         Span::raw(indent),
@@ -865,7 +456,7 @@ pub enum GitHit {
 
 /// Converts the mouse (x, y) into a Git panel target. `area` is the full sidebar area.
 pub fn git_hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<GitHit> {
-    let area = content_rect(area);
+    let area = panel_area(area);
     let l = git_layout(model, area);
     let g = &model.sidebar.git;
     if l.has_box {
@@ -918,24 +509,4 @@ pub fn git_hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<GitHit> {
         }
         _ => None,
     }
-}
-
-fn render_extensions(frame: &mut Frame, area: Rect, model: &Model) {
-    let lines = vec![
-        Line::from(Span::styled(
-            " Extensions (coming soon)",
-            Style::new().fg(model.theme.fg_dim),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            " Vim shortcuts, LSP, and the",
-            Style::new().fg(model.theme.fg_dim),
-        )),
-        Line::from(Span::styled(
-            " plugin system will land here.",
-            Style::new().fg(model.theme.fg_dim),
-        )),
-    ];
-    let p = Paragraph::new(lines).style(Style::new().bg(model.theme.bg_alt));
-    frame.render_widget(p, area);
 }

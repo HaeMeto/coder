@@ -45,9 +45,8 @@ impl Theme {
         scale(self.bg_alt, 0.7)
     }
 
-    /// Background of the open (active tab's) file row in the explorer: 20% lighter
-    /// than the panel background so the active file is visible at a glance.
-    pub fn active_row_bg(&self) -> Color {
+    /// Background of the selected search result: panel background darkened 30%.
+    pub fn selected_bg(&self) -> Color {
         scale(self.bg_alt, 0.7)
     }
 }

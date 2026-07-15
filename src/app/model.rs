@@ -38,7 +38,7 @@ impl Panel {
         match self {
             Panel::Files => "\u{f4a5}", // file
             Panel::Search => "\u{f002}",
-            Panel::Git => "\u{f1d3}",
+            Panel::Git => "\u{f419}",
             Panel::Extensions => "\u{f12e}",
             Panel::Themes => "\u{f1fc}", // palette
             Panel::Settings => "\u{f013}", // gear

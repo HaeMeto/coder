@@ -289,14 +289,6 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
                     model.sidebar.search.search_hidden = !model.sidebar.search.search_hidden;
                     return rerun_search(model);
                 }
-                Some(SearchHit::Prev) => {
-                    model.focus = Focus::Sidebar;
-                    nav(model, -1);
-                }
-                Some(SearchHit::Next) => {
-                    model.focus = Focus::Sidebar;
-                    nav(model, 1);
-                }
                 Some(SearchHit::ReplaceOne) => return search_replace_one(model),
                 Some(SearchHit::ReplaceAll) => return search_replace_all(model),
                 Some(SearchHit::Result(idx)) => {
