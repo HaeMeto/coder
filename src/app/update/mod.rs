@@ -166,6 +166,29 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             has_upstream,
             has_remote,
         } => {
+            // Close diff-mode tabs for files no longer in the change list (reverted /
+            // committed). Their diff is gone, leaving a stale editor view otherwise.
+            let stale: Vec<usize> = model
+                .tabs
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.diff_mode)
+                .filter_map(|(i, t)| {
+                    let path = t.buffer.path.as_ref()?;
+                    let in_list = staged
+                        .iter()
+                        .chain(unstaged.iter())
+                        .any(|e| e.path == path.as_path());
+                    if !in_list {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            for i in stale.into_iter().rev() {
+                close_tab(model, i);
+            }
             let g = &mut model.sidebar.git;
             g.branch = branch;
             g.staged = staged;
