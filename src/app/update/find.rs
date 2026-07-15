@@ -17,8 +17,11 @@ pub(super) fn open_find(model: &mut Model, replace: bool) -> Vec<Cmd> {
         && !sel.is_empty()
         && !sel.contains('\n')
     {
-        model.find.query = sel;
+        model.find.query.set_content(sel);
     }
+    // Place the caret at the end of each field's current text.
+    model.find.query.cursor_to_end();
+    model.find.replace.cursor_to_end();
     model.focus = Focus::Find;
     recompute_find(model);
     Vec::new()
@@ -35,7 +38,7 @@ pub(super) fn close_find(model: &mut Model) {
 pub(super) fn recompute_find(model: &mut Model) {
     let matches = model
         .active_buffer()
-        .map(|b| find_matches(&b.full_text(), &model.find.query))
+        .map(|b| find_matches(&b.full_text(), model.find.query.content()))
         .unwrap_or_default();
     model.find.matches = matches;
     if model.find.matches.is_empty() {
@@ -90,7 +93,7 @@ pub(super) fn find_replace_one(model: &mut Model) -> Vec<Cmd> {
     let Some(&(s, e)) = model.find.matches.get(i) else {
         return Vec::new();
     };
-    let rep = model.find.replace.clone();
+    let rep = model.find.replace.content().to_string();
     if let Some(buf) = model.active_buffer_mut() {
         buf.select_char_range(s, e);
         buf.insert_str(&rep);
@@ -106,10 +109,10 @@ pub(super) fn find_replace_all(model: &mut Model) -> Vec<Cmd> {
     if model.find.query.is_empty() {
         return Vec::new();
     }
-    let rep = model.find.replace.clone();
+    let rep = model.find.replace.content().to_string();
     let Some((new_text, count)) = model
         .active_buffer()
-        .map(|b| replace_all_text(&b.full_text(), &model.find.query, &rep))
+        .map(|b| replace_all_text(&b.full_text(), model.find.query.content(), &rep))
     else {
         return Vec::new();
     };

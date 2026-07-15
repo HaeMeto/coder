@@ -10,11 +10,12 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::app::model::{FindField, Focus, Model};
+use crate::ui::text_input::TextInput;
 
 /// Target of a mouse click inside the find widget.
 pub enum FindHit {
@@ -176,7 +177,12 @@ pub fn render(frame: &mut Frame, editor: Rect, model: &Model) {
 
     // --- Find row ---
     let q_focused = focused && model.find.field == FindField::Query;
-    render_input(frame, l.query, &model.find.query, "Find...", q_focused, th);
+    frame.render_widget(
+        TextInput::new(&model.find.query, th)
+            .placeholder("Find...")
+            .focused(q_focused),
+        l.query,
+    );
 
     let count_style = if model.find.matches.is_empty() && !model.find.query.is_empty() {
         Style::new().fg(th.git_deleted).bg(th.bg_alt)
@@ -206,7 +212,12 @@ pub fn render(frame: &mut Frame, editor: Rect, model: &Model) {
     // --- Replace row ---
     if let Some(ry) = l.replace_y {
         let r_focused = focused && model.find.field == FindField::Replace;
-        render_input(frame, l.replace, &model.find.replace, "Replace...", r_focused, th);
+        frame.render_widget(
+            TextInput::new(&model.find.replace, th)
+                .placeholder("Replace...")
+                .focused(r_focused),
+            l.replace,
+        );
 
         let can = !model.find.matches.is_empty();
         let (fg, bg) = if can {
@@ -230,59 +241,4 @@ pub fn render(frame: &mut Frame, editor: Rect, model: &Model) {
             Rect { x: as_, y: ry, width: ae - as_, height: 1 },
         );
     }
-}
-
-/// Renders a single-line text input into `area` with a blinking caret when focused.
-/// The visible window is the tail of the text so the caret stays on screen.
-fn render_input(
-    frame: &mut Frame,
-    area: Rect,
-    text: &str,
-    placeholder: &str,
-    focused: bool,
-    th: &crate::core::theme::Theme,
-) {
-    // Inputs are always sunken (darker), regardless of focus.
-    let bg = th.input_bg();
-    let width = area.width as usize;
-
-    let mut spans: Vec<Span> = Vec::new();
-    if text.is_empty() {
-        // Dim placeholder when empty (shown alongside the caret while focused).
-        if focused {
-            spans.push(caret_span(th, bg));
-        }
-        spans.push(Span::styled(
-            placeholder.to_string(),
-            Style::new().fg(th.fg_dim).bg(bg),
-        ));
-    } else {
-        // Reserve one column for the caret when focused.
-        let text_room = if focused { width.saturating_sub(1) } else { width };
-        let chars: Vec<char> = text.chars().collect();
-        let visible: String = if chars.len() > text_room {
-            chars[chars.len() - text_room..].iter().collect()
-        } else {
-            text.to_string()
-        };
-        spans.push(Span::styled(visible, Style::new().fg(th.fg).bg(bg)));
-        if focused {
-            spans.push(caret_span(th, bg));
-        }
-    }
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::new().bg(bg)),
-        area,
-    );
-}
-
-/// A blinking block caret span on the given background.
-fn caret_span(th: &crate::core::theme::Theme, bg: ratatui::style::Color) -> Span<'static> {
-    Span::styled(
-        "█",
-        Style::new()
-            .fg(th.accent)
-            .bg(bg)
-            .add_modifier(Modifier::SLOW_BLINK),
-    )
 }

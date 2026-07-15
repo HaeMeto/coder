@@ -8,6 +8,7 @@ pub mod sidebar;
 pub mod statusbar;
 pub mod tabs;
 pub mod terminal;
+pub mod text_input;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};

@@ -115,21 +115,7 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         }
         Action::Activate => activate_selection(model),
 
-        // ----- Search -----
-        Action::SearchChar(c) => {
-            match model.sidebar.search.field {
-                SearchField::Query => model.sidebar.search.query.push(c),
-                SearchField::Replace => model.sidebar.search.replace.push(c),
-            }
-            Vec::new()
-        }
-        Action::SearchBackspace => {
-            match model.sidebar.search.field {
-                SearchField::Query => model.sidebar.search.query.pop(),
-                SearchField::Replace => model.sidebar.search.replace.pop(),
-            };
-            Vec::new()
-        }
+        // ----- Search (typing handled by the focused input widget) -----
         Action::SearchToggleField => {
             model.sidebar.search.field = match model.sidebar.search.field {
                 SearchField::Query => SearchField::Replace,
@@ -143,7 +129,7 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         }
         Action::SearchSubmit => {
             let s = &model.sidebar.search;
-            let query = s.query.clone();
+            let query = s.query.content().to_string();
             let (use_regex, match_case, search_hidden) =
                 (s.use_regex, s.match_case, s.search_hidden);
             if query.is_empty() {
@@ -161,7 +147,7 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
                 }
                 // Enter in the Replace field -> replace across all files.
                 SearchField::Replace => {
-                    let replace = s.replace.clone();
+                    let replace = s.replace.content().to_string();
                     model.status_message = "Replacing...".to_string();
                     vec![Cmd::RunReplace {
                         query,
@@ -174,46 +160,9 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
             }
         }
 
-        // ----- Git commit input -----
-        Action::GitCommitChar(c) => {
-            model.sidebar.git.commit_msg.push(c);
-            Vec::new()
-        }
-        Action::GitCommitBackspace => {
-            model.sidebar.git.commit_msg.pop();
-            Vec::new()
-        }
-        // Enter inserts a newline (multi-line messages); committing is button-only.
-        Action::GitCommitSubmit => {
-            model.sidebar.git.commit_msg.push('\n');
-            Vec::new()
-        }
-
-        // ----- In-editor find / replace -----
+        // ----- In-editor find / replace (typing handled by the input widget) -----
         Action::OpenFind => open_find(model, false),
         Action::OpenFindReplace => open_find(model, true),
-        Action::FindChar(c) => {
-            match model.find.field {
-                FindField::Query => {
-                    model.find.query.push(c);
-                    recompute_find(model);
-                }
-                FindField::Replace => model.find.replace.push(c),
-            }
-            Vec::new()
-        }
-        Action::FindBackspace => {
-            match model.find.field {
-                FindField::Query => {
-                    model.find.query.pop();
-                    recompute_find(model);
-                }
-                FindField::Replace => {
-                    model.find.replace.pop();
-                }
-            }
-            Vec::new()
-        }
         Action::FindNext => {
             find_step(model, 1);
             Vec::new()

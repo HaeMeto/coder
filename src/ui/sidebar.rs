@@ -4,10 +4,11 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::{Block, Paragraph};
 
 use crate::app::model::{Focus, GitStatus, Model, Panel, SettingsState};
 use crate::services::git::{GitEntry, GitState};
+use crate::ui::text_input::TextInput;
 
 /// Insets a rect by 1 cell on every side (the sidebar's inner padding). Render
 /// and all hit-testing pass the sidebar area through this so they stay aligned.
@@ -227,41 +228,6 @@ pub fn file_row_at(model: &Model, area: Rect, y: u16) -> Option<usize> {
 /// search-hidden, count.
 const SEARCH_HEADER_ROWS: u16 = 10;
 
-/// Builds a full-width text-input row for the search panel: leading text or dim
-/// placeholder, a blinking caret when focused, and a dark (sunken) fill.
-fn search_input_line(
-    th: &crate::core::theme::Theme,
-    width: usize,
-    text: &str,
-    placeholder: &str,
-    active: bool,
-) -> Line<'static> {
-    let bg = th.input_bg();
-    let mut spans: Vec<Span> = vec![Span::styled(" ", Style::new().bg(bg))];
-    let mut used = 1usize;
-    let caret = Span::styled(
-        "█",
-        Style::new().fg(th.accent).bg(bg).add_modifier(Modifier::SLOW_BLINK),
-    );
-    if text.is_empty() {
-        if active {
-            spans.push(caret);
-            used += 1;
-        }
-        spans.push(Span::styled(placeholder.to_string(), Style::new().fg(th.fg_dim).bg(bg)));
-        used += placeholder.chars().count();
-    } else {
-        let fg = if active { th.fg } else { th.fg_dim };
-        spans.push(Span::styled(text.to_string(), Style::new().fg(fg).bg(bg)));
-        used += text.chars().count();
-        if active {
-            spans.push(caret);
-            used += 1;
-        }
-    }
-    spans.push(Span::styled(" ".repeat(width.saturating_sub(used)), Style::new().bg(bg)));
-    Line::from(spans)
-}
 
 /// Builds a two-button row (left | gap | right) sized to `width`; each cell is
 /// accent-colored when enabled, dim otherwise. Splits match `two_button_hit`.
@@ -324,14 +290,19 @@ fn render_search(frame: &mut Frame, area: Rect, model: &Model) {
             Style::new().fg(if on { th.accent } else { th.fg_dim }),
         ))
     };
+    // The two input rows are drawn by the shared TextInput widget as an overlay
+    // (see below); reserve blank sunken rows for them here.
+    let blank_input = || Line::from(Span::styled(" ".repeat(width), Style::new().bg(th.input_bg())));
     let mut lines: Vec<Line> = vec![
-        // 0) Search input.
-        search_input_line(th, width, &s.query, "Find...", query_active),
+        // 0) Search input (overlaid).
+        blank_input(),
+        Span::from("").into(),
         // 1) Prev / Next buttons.
         two_button_line(th, width, "Prev", has_results, "Next", has_results),
         Span::from("").into(),
-        // 3) Replace input.
-        search_input_line(th, width, &s.replace, "Replace...", replace_active),
+        // 3) Replace input (overlaid).
+        blank_input(),
+        Span::from("").into(),
         // 4) Replace / Replace All buttons.
         two_button_line(th, width, "Replace", has_query && has_results, "Replace All", has_query),
         Span::from("").into(),
@@ -341,7 +312,6 @@ fn render_search(frame: &mut Frame, area: Rect, model: &Model) {
                 format!(" {} RegExp", if s.use_regex { "[x]" } else { "[ ]" }),
                 Style::new().fg(if s.use_regex { th.accent } else { th.fg_dim }),
             ),
-            Span::styled("  ⌃R", Style::new().fg(th.fg_dim)),
         ]),
         // 7) Match Case checkbox.
         check(s.match_case, "Match Case"),
@@ -349,7 +319,7 @@ fn render_search(frame: &mut Frame, area: Rect, model: &Model) {
         check(s.search_hidden, "Search Ignored & Hidden"),
         // 9) Result count.
         Line::from(Span::styled(
-            format!(" {} results", s.results.len()),
+            format!("- {} results: -", s.results.len()),
             Style::new().fg(th.fg_dim),
         )),
     ];
@@ -374,6 +344,23 @@ fn render_search(frame: &mut Frame, area: Rect, model: &Model) {
     }
     let p = Paragraph::new(lines).style(Style::new().bg(th.bg_alt));
     frame.render_widget(p, area);
+
+    // Overlay the query/replace inputs on their reserved rows (indices 0 and 4).
+    let input_row = |dy: u16| Rect { x: area.x, y: area.y + dy, width: area.width, height: 1 };
+    frame.render_widget(
+        TextInput::new(&s.query, th)
+            .placeholder("Find...")
+            .focused(query_active)
+            .pad(1),
+        input_row(0),
+    );
+    frame.render_widget(
+        TextInput::new(&s.replace, th)
+            .placeholder("Replace...")
+            .focused(replace_active)
+            .pad(1),
+        input_row(4),
+    );
 }
 
 /// Target of a mouse click in the search panel.
@@ -833,44 +820,12 @@ fn render_commit_box(frame: &mut Frame, area: Rect, l: &GitLayout, model: &Model
     let g = &model.sidebar.git;
     let focused = model.focus == Focus::GitCommit;
 
-    // Input field (multi-line: Enter splits `commit_msg` into rows). Always on a
-    // darker (sunken) background.
-    let input_bg = th.input_bg();
-    let caret = || {
-        Span::styled(
-            "█",
-            Style::new()
-                .fg(th.accent)
-                .bg(input_bg)
-                .add_modifier(Modifier::SLOW_BLINK),
-        )
-    };
-    let input = if g.commit_msg.is_empty() && !focused {
-        Paragraph::new(" Message").style(Style::new().fg(th.fg_dim).bg(input_bg))
-    } else {
-        // One display row per '\n'; the blinking caret sits at the end of the last.
-        let msg_lines: Vec<&str> = g.commit_msg.split('\n').collect();
-        let last = msg_lines.len() - 1;
-        let lines: Vec<Line> = msg_lines
-            .iter()
-            .enumerate()
-            .map(|(i, seg)| {
-                let mut spans = vec![Span::styled(
-                    format!(" {seg}"),
-                    Style::new().fg(th.fg).bg(input_bg),
-                )];
-                if focused && i == last {
-                    spans.push(caret());
-                }
-                Line::from(spans)
-            })
-            .collect();
-        Paragraph::new(lines)
-            .style(Style::new().bg(input_bg))
-            .wrap(Wrap { trim: false })
-    };
+    // Multi-line, vertically-scrolling commit input (shared text-input widget).
     frame.render_widget(
-        input,
+        TextInput::new(&g.commit, th)
+            .placeholder("Message")
+            .focused(focused)
+            .pad(1),
         Rect {
             y: l.input_top,
             height: COMMIT_INPUT_H,
@@ -880,7 +835,7 @@ fn render_commit_box(frame: &mut Frame, area: Rect, l: &GitLayout, model: &Model
 
     // Commit button.
     let label = " Commit ";
-    let can_commit = !g.staged.is_empty() && !g.commit_msg.trim().is_empty();
+    let can_commit = !g.staged.is_empty() && !g.commit.content().trim().is_empty();
     let btn_bg = if can_commit { th.accent } else { th.tab_inactive_bg };
     let btn = Paragraph::new(Line::from(Span::styled(
         format!("{label:^width$}"),

@@ -93,11 +93,13 @@ fn handle_find_hit(model: &mut Model, hit: ui::find::FindHit) -> Vec<Cmd> {
         FindHit::QueryField => {
             model.focus = Focus::Find;
             model.find.field = FindField::Query;
+            model.find.query.cursor_to_end();
             Vec::new()
         }
         FindHit::ReplaceField => {
             model.focus = Focus::Find;
             model.find.field = FindField::Replace;
+            model.find.replace.cursor_to_end();
             Vec::new()
         }
         FindHit::Prev => {
@@ -228,6 +230,7 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
                 }
                 Some(GitHit::CommitInput) => {
                     model.focus = Focus::GitCommit;
+                    model.sidebar.git.commit.cursor_to_end();
                     Vec::new()
                 }
                 Some(GitHit::CommitButton) => git_commit(model),

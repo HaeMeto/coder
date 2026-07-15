@@ -10,7 +10,7 @@ pub(super) fn rerun_search(model: &mut Model) -> Vec<Cmd> {
         return Vec::new();
     }
     vec![Cmd::RunSearch {
-        query: s.query.clone(),
+        query: s.query.content().to_string(),
         use_regex: s.use_regex,
         match_case: s.match_case,
         search_hidden: s.search_hidden,
@@ -24,8 +24,8 @@ pub(super) fn search_replace_all(model: &mut Model) -> Vec<Cmd> {
         return Vec::new();
     }
     let (query, replace, use_regex, match_case, search_hidden) = (
-        s.query.clone(),
-        s.replace.clone(),
+        s.query.content().to_string(),
+        s.replace.content().to_string(),
         s.use_regex,
         s.match_case,
         s.search_hidden,
@@ -51,8 +51,8 @@ pub(super) fn search_replace_one(model: &mut Model) -> Vec<Cmd> {
     };
     let path = m.path.clone();
     let (query, replace, use_regex, match_case) = (
-        s.query.clone(),
-        s.replace.clone(),
+        s.query.content().to_string(),
+        s.replace.content().to_string(),
         s.use_regex,
         s.match_case,
     );

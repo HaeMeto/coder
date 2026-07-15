@@ -34,23 +34,14 @@ pub enum Action {
     NavDown,
     Activate,
 
-    // Search input
-    SearchChar(char),
-    SearchBackspace,
+    // Search input (text editing is handled by the focused input widget itself)
     SearchSubmit,
     SearchToggleField,
     SearchToggleRegex,
 
-    // Git commit input
-    GitCommitChar(char),
-    GitCommitBackspace,
-    GitCommitSubmit,
-
-    // In-editor find / replace widget
+    // In-editor find / replace widget (text editing handled by the input widget)
     OpenFind,
     OpenFindReplace,
-    FindChar(char),
-    FindBackspace,
     FindNext,
     FindPrev,
     FindToggleField,
@@ -117,11 +108,12 @@ pub fn resolve(key: KeyEvent, focus: Focus) -> Option<Action> {
 }
 
 fn resolve_find(key: KeyEvent, shift: bool) -> Option<Action> {
+    // Editing/motion keys are consumed by the focused input widget upstream; only
+    // find-specific keys reach here.
     match key.code {
         KeyCode::Tab => Some(Action::FindToggleField), // query <-> replace
-        KeyCode::Char(c) => Some(Action::FindChar(c)),
-        KeyCode::Backspace => Some(Action::FindBackspace),
         KeyCode::Enter => Some(if shift { Action::FindPrev } else { Action::FindNext }),
+        // Up/Down step through matches (the inputs are single-line).
         KeyCode::Down => Some(Action::FindNext),
         KeyCode::Up => Some(Action::FindPrev),
         KeyCode::Esc => Some(Action::Escape),
@@ -130,10 +122,9 @@ fn resolve_find(key: KeyEvent, shift: bool) -> Option<Action> {
 }
 
 fn resolve_git_commit(key: KeyEvent) -> Option<Action> {
+    // The commit box is multi-line: the input widget consumes typing, motion, and
+    // Enter (newline). Committing is button-only; Esc blurs back to the sidebar.
     match key.code {
-        KeyCode::Char(c) => Some(Action::GitCommitChar(c)),
-        KeyCode::Backspace => Some(Action::GitCommitBackspace),
-        KeyCode::Enter => Some(Action::GitCommitSubmit),
         KeyCode::Esc => Some(Action::Escape),
         _ => None,
     }
@@ -192,10 +183,9 @@ fn resolve_search(key: KeyEvent) -> Option<Action> {
             _ => None,
         };
     }
+    // Typing/motion is consumed by the focused input widget upstream.
     match key.code {
         KeyCode::Tab => Some(Action::SearchToggleField), // query <-> replace
-        KeyCode::Char(c) => Some(Action::SearchChar(c)),
-        KeyCode::Backspace => Some(Action::SearchBackspace),
         KeyCode::Enter => Some(Action::SearchSubmit),
         KeyCode::Up => Some(Action::NavUp),
         KeyCode::Down => Some(Action::NavDown),

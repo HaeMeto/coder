@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use crate::core::buffer::Buffer;
 use crate::core::filetree::FileTree;
 use crate::core::highlight::{self, HlLine, Highlighter};
+use crate::core::text_input::TextInputState;
 use crate::core::theme::Theme;
 use crate::services::git::{GitEntry, GutterKind};
 use crate::services::pty::PtySession;
@@ -168,8 +169,8 @@ pub struct FindState {
     pub open: bool,
     /// Whether the replace row (input + Replace/Replace All buttons) is shown.
     pub replace_mode: bool,
-    pub query: String,
-    pub replace: String,
+    pub query: TextInputState,
+    pub replace: TextInputState,
     pub field: FindField,
     /// Match ranges in the active buffer, as absolute [start, end) character indices.
     pub matches: Vec<(usize, usize)>,
@@ -237,8 +238,8 @@ pub enum SearchField {
 
 #[derive(Default)]
 pub struct SearchState {
-    pub query: String,
-    pub replace: String,
+    pub query: TextInputState,
+    pub replace: TextInputState,
     /// Should the query be interpreted as a regex?
     pub use_regex: bool,
     /// Case-sensitive matching when true (default: case-insensitive).
@@ -260,8 +261,8 @@ pub struct GitStatus {
     pub is_repo: bool,
     /// Keyboard selection: index into the combined [staged..., unstaged...] list.
     pub selected: usize,
-    /// Text in the commit message box.
-    pub commit_msg: String,
+    /// The commit message input box.
+    pub commit: TextInputState,
     /// Commits the local branch is ahead of its upstream.
     pub ahead: usize,
     /// Commits the local branch is behind its upstream.

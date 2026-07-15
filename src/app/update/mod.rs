@@ -16,6 +16,7 @@ use crate::app::model::{
 use crate::app::msg::Msg;
 use crate::core::buffer::{Buffer, Cursor};
 use crate::core::keymap::{self, Action, Motion};
+use crate::core::text_input::{InputOutcome, TextInputState};
 use crate::ui;
 
 mod action;
@@ -46,6 +47,22 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             // If a modal dialog is open it captures all keyboard input.
             if model.dialog.is_some() {
                 return dialog_key(model, key);
+            }
+            // A focused text input handles its own editing/motion keys first and
+            // reports back what it did; only keys it ignores fall through to the
+            // keymap (Enter/Tab/Esc, Ctrl-shortcuts, match/result navigation).
+            if let Some((input, multiline)) = focused_input(model) {
+                match input.handle_key(key, multiline) {
+                    InputOutcome::Ignored => {}
+                    InputOutcome::Moved => return Vec::new(),
+                    InputOutcome::Changed => {
+                        // Live find: re-run matches when the query text changes.
+                        if model.focus == Focus::Find && model.find.field == FindField::Query {
+                            recompute_find(model);
+                        }
+                        return Vec::new();
+                    }
+                }
             }
             if let Some(action) = keymap::resolve(key, model.focus) {
                 return apply_action(model, action);
@@ -160,7 +177,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                 .collect()
         }
         Msg::SearchResults { query, matches } => {
-            if query == model.sidebar.search.query {
+            if query == model.sidebar.search.query.content() {
                 model.sidebar.search.results = matches;
                 model.sidebar.search.selected = 0;
                 model.status_message =
@@ -185,7 +202,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             let s = &model.sidebar.search;
             if !s.query.is_empty() {
                 cmds.push(Cmd::RunSearch {
-                    query: s.query.clone(),
+                    query: s.query.content().to_string(),
                     use_regex: s.use_regex,
                     match_case: s.match_case,
                     search_hidden: s.search_hidden,
@@ -217,5 +234,28 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             model.status_message = format!("Error: {e}");
             Vec::new()
         }
+    }
+}
+
+/// The text input the current focus routes keys to, and whether it is multi-line.
+/// `None` when focus is not on a text field.
+fn focused_input(model: &mut Model) -> Option<(&mut TextInputState, bool)> {
+    match model.focus {
+        Focus::Find => {
+            let f = match model.find.field {
+                FindField::Query => &mut model.find.query,
+                FindField::Replace => &mut model.find.replace,
+            };
+            Some((f, false))
+        }
+        Focus::SearchInput => {
+            let s = match model.sidebar.search.field {
+                SearchField::Query => &mut model.sidebar.search.query,
+                SearchField::Replace => &mut model.sidebar.search.replace,
+            };
+            Some((s, false))
+        }
+        Focus::GitCommit => Some((&mut model.sidebar.git.commit, true)),
+        _ => None,
     }
 }
