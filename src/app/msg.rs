@@ -27,6 +27,13 @@ pub enum Msg {
     FileSaved {
         path: PathBuf,
     },
+    /// A file/directory was renamed on disk (open tabs under it move too).
+    PathRenamed {
+        from: PathBuf,
+        to: PathBuf,
+    },
+    /// A file/directory was deleted on disk (its open tabs close).
+    PathDeleted(PathBuf),
     GitStatusLoaded {
         branch: Option<String>,
         staged: Vec<GitEntry>,

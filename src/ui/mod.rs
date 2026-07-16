@@ -2,6 +2,7 @@
 
 pub mod activity_bar;
 pub mod completion;
+pub mod context_menu;
 pub mod dialog;
 pub mod editor;
 pub mod find;
@@ -140,6 +141,11 @@ pub fn view(frame: &mut Frame, model: &Model) {
         terminal::render(frame, a.terminal, model);
     }
     statusbar::render(frame, a.statusbar, model);
+
+    // The file-tree context menu floats over everything but the dialog.
+    if model.context_menu.is_some() {
+        context_menu::render(frame, model);
+    }
 
     // Modal dialog on top.
     if model.dialog.is_some() {

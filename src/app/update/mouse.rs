@@ -76,6 +76,17 @@ pub(super) fn handle_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
             }
             Vec::new()
         }
+        // Right-click on a file-tree row opens the context menu.
+        MouseEventKind::Down(MouseButton::Right) => {
+            if a.sidebar_open
+                && model.sidebar.active == Panel::Files
+                && rect_contains(a.sidebar, x, y)
+                && let Some(idx) = ui::sidebar::file_row_at(model, a.sidebar, y)
+            {
+                return open_file_menu(model, idx, x, y);
+            }
+            Vec::new()
+        }
         MouseEventKind::ScrollDown => mouse_scroll(model, &a, x, y, 3),
         MouseEventKind::ScrollUp => mouse_scroll(model, &a, x, y, -3),
         _ => Vec::new(),
@@ -186,12 +197,17 @@ fn editor_cursor_at(model: &Model, a: &ui::Areas, x: u16, y: u16) -> Cursor {
 fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
     match model.sidebar.active {
         Panel::Files => {
-            if let Some(idx) = ui::sidebar::file_row_at(model, a.sidebar, y) {
-                model.sidebar.files.selected = idx;
-                model.focus = Focus::Sidebar;
-                return activate_selection(model);
+            use ui::sidebar::FileHit;
+            match ui::sidebar::file_hit(model, a.sidebar, x, y) {
+                Some(FileHit::Row(idx)) => {
+                    model.sidebar.files.selected = idx;
+                    model.focus = Focus::Sidebar;
+                    activate_selection(model)
+                }
+                Some(FileHit::NewFile(idx)) => new_entry_dialog(model, idx, false),
+                Some(FileHit::NewFolder(idx)) => new_entry_dialog(model, idx, true),
+                None => Vec::new(),
             }
-            Vec::new()
         }
         Panel::Git => {
             use ui::sidebar::GitHit;

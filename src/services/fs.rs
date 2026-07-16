@@ -30,6 +30,46 @@ pub fn scan_dir(dir: &Path) -> Result<Vec<(PathBuf, bool)>> {
     Ok(entries)
 }
 
+/// Creates an empty file. Errors if the path already exists.
+pub fn create_file(path: &Path) -> Result<()> {
+    if path.exists() {
+        anyhow::bail!("'{}' already exists", path.display());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::File::create(path)?;
+    Ok(())
+}
+
+/// Creates a directory. Errors if the path already exists.
+pub fn create_dir(path: &Path) -> Result<()> {
+    if path.exists() {
+        anyhow::bail!("'{}' already exists", path.display());
+    }
+    std::fs::create_dir_all(path)?;
+    Ok(())
+}
+
+/// Renames `from` to `to`. Errors if `to` already exists (never overwrites).
+pub fn rename_path(from: &Path, to: &Path) -> Result<()> {
+    if to.exists() {
+        anyhow::bail!("'{}' already exists", to.display());
+    }
+    std::fs::rename(from, to)?;
+    Ok(())
+}
+
+/// Deletes a file, or a directory with everything under it.
+pub fn delete_path(path: &Path) -> Result<()> {
+    if path.is_dir() {
+        std::fs::remove_dir_all(path)?;
+    } else {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
 pub async fn read_file(path: &Path) -> Result<String> {
     Ok(tokio::fs::read_to_string(path).await?)
 }

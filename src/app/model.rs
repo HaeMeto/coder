@@ -308,13 +308,13 @@ pub struct Sidebar {
 }
 
 /// General-purpose modal dialog kind.
-// The Info/Input kinds are not used yet; the general API is for future use.
-#[allow(dead_code)]
+// The Info kind is not used yet; the general API is for future use.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DialogKind {
     /// Confirmation dialog (Yes / No).
     Ask,
     /// Information dialog (OK only).
+    #[allow(dead_code)]
     Info,
     /// Text input (OK / Cancel).
     Input,
@@ -328,6 +328,14 @@ pub enum DialogAction {
     None,
     /// Revert the working-tree change for the given path.
     GitRevert(String),
+    /// Create a new file with the entered name inside the given directory.
+    NewFile(PathBuf),
+    /// Create a new directory with the entered name inside the given directory.
+    NewFolder(PathBuf),
+    /// Rename the given path to the entered name (kept in the same directory).
+    Rename(PathBuf),
+    /// Delete the given path (recursively for a directory).
+    Delete(PathBuf),
 }
 
 /// Modal dialog opened in the center of the screen. Captures all input while open.
@@ -367,8 +375,6 @@ impl Dialog {
         }
     }
 
-    /// General dialog constructor for future use.
-    #[allow(dead_code)]
     pub fn input(title: String, message: String, initial: String, action: DialogAction) -> Self {
         Dialog {
             kind: DialogKind::Input,
@@ -377,6 +383,66 @@ impl Dialog {
             input: initial,
             selected: 0,
             action,
+        }
+    }
+}
+
+/// An entry of the file-tree context menu.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MenuItem {
+    NewFile,
+    NewFolder,
+    Rename,
+    Delete,
+}
+
+impl MenuItem {
+    /// The items shown for a tree row, in order.
+    pub const ALL: [MenuItem; 4] = [
+        MenuItem::NewFile,
+        MenuItem::NewFolder,
+        MenuItem::Rename,
+        MenuItem::Delete,
+    ];
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            MenuItem::NewFile => "New File",
+            MenuItem::NewFolder => "New Folder",
+            MenuItem::Rename => "Rename",
+            MenuItem::Delete => "Delete",
+        }
+    }
+
+    /// The keyboard shortcut for the same action (also listed in the status bar).
+    pub fn shortcut(&self) -> &'static str {
+        match self {
+            MenuItem::NewFile => "Ctrl+N",
+            MenuItem::NewFolder => "Ctrl+Shift+N",
+            MenuItem::Rename => "F2",
+            MenuItem::Delete => "Del",
+        }
+    }
+}
+
+/// Context menu opened by right-clicking a file-tree row. Captures all input
+/// while open, like `Dialog`.
+pub struct ContextMenu {
+    /// The visible tree row the menu was opened on.
+    pub row: usize,
+    pub selected: usize,
+    /// Top-left corner requested by the click; clamped to the screen on render.
+    pub x: u16,
+    pub y: u16,
+}
+
+impl ContextMenu {
+    pub fn new(row: usize, x: u16, y: u16) -> Self {
+        ContextMenu {
+            row,
+            selected: 0,
+            x,
+            y,
         }
     }
 }
@@ -501,6 +567,8 @@ pub struct Model {
     pub pending_diff_scroll: Option<PathBuf>,
     /// The open modal dialog (captures all input when present).
     pub dialog: Option<Dialog>,
+    /// The open file-tree context menu (captures all input when present).
+    pub context_menu: Option<ContextMenu>,
     /// Change-gutter markers for the active buffer, keyed by line index.
     pub active_git_marks: std::collections::HashMap<usize, GutterKind>,
     /// The (tab index, buffer version) that active_git_marks belongs to.
@@ -572,6 +640,7 @@ impl Model {
             pending_diff: None,
             pending_diff_scroll: None,
             dialog: None,
+            context_menu: None,
             active_git_marks: std::collections::HashMap::new(),
             active_git_marks_key: None,
             active_deleted: Vec::new(),

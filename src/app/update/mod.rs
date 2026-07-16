@@ -11,7 +11,8 @@ use ratatui::layout::Rect;
 
 use crate::app::cmd::Cmd;
 use crate::app::model::{
-    Dialog, DialogAction, DialogKind, DragTarget, FindField, Focus, Model, Panel, SearchField, Tab,
+    ContextMenu, Dialog, DialogAction, DialogKind, DragTarget, FindField, Focus, MenuItem, Model,
+    Panel, SearchField, Tab,
 };
 use crate::app::msg::Msg;
 use crate::core::buffer::{Buffer, Cursor};
@@ -25,6 +26,7 @@ mod editor;
 mod find;
 mod git;
 mod lsp;
+mod menu;
 mod mouse;
 mod search;
 mod sidebar_nav;
@@ -33,6 +35,7 @@ mod terminal;
 
 use action::apply_action;
 use dialog::{dialog_key, dialog_mouse};
+use menu::{menu_key, menu_mouse, open_file_menu};
 use editor::*;
 use find::*;
 use git::*;
@@ -48,6 +51,10 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             // If a modal dialog is open it captures all keyboard input.
             if model.dialog.is_some() {
                 return dialog_key(model, key);
+            }
+            // The file-tree context menu captures input the same way.
+            if model.context_menu.is_some() {
+                return menu_key(model, key);
             }
             // The completion popup (editor sub-mode) gets first refusal on keys.
             if model.completion.is_some()
@@ -80,6 +87,9 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             if model.dialog.is_some() {
                 return dialog_mouse(model, m);
             }
+            if model.context_menu.is_some() {
+                return menu_mouse(model, m);
+            }
             handle_mouse(model, m)
         }
         Msg::Resize(w, h) => {
@@ -89,6 +99,11 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         }
         Msg::DirScanned { path, entries } => {
             model.sidebar.files.set_children(&path, entries);
+            // A rescan after a delete can leave the selection past the last row.
+            let len = model.sidebar.files.visible_rows().len();
+            if model.sidebar.files.selected >= len {
+                model.sidebar.files.selected = len.saturating_sub(1);
+            }
             Vec::new()
         }
         Msg::FileLoaded { path, text } => {
@@ -160,6 +175,54 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             cmds
         }
         Msg::FileReloaded { path, text } => apply_reload(model, path, text),
+        Msg::PathRenamed { from, to } => {
+            // Re-point open tabs: a renamed directory moves every file under it.
+            let mut cmds = Vec::new();
+            for tab in model.tabs.iter_mut() {
+                let Some(old) = tab.buffer.path.clone() else {
+                    continue;
+                };
+                let Ok(rest) = old.strip_prefix(&from) else {
+                    continue;
+                };
+                let new = if rest.as_os_str().is_empty() {
+                    to.clone()
+                } else {
+                    to.join(rest)
+                };
+                tab.buffer.path = Some(new.clone());
+                cmds.push(Cmd::LoadHeadText(new));
+            }
+            model.status_message = format!(
+                "Renamed: {} -> {}",
+                name_of(&from),
+                name_of(&to)
+            );
+            cmds.push(Cmd::LoadGitStatus);
+            cmds
+        }
+        Msg::PathDeleted(path) => {
+            // Close the tabs of deleted files (a whole subtree for a directory).
+            let gone: Vec<usize> = model
+                .tabs
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| {
+                    t.buffer
+                        .path
+                        .as_ref()
+                        .is_some_and(|p| p.starts_with(&path))
+                })
+                .map(|(i, _)| i)
+                .collect();
+            let mut cmds: Vec<Cmd> = Vec::new();
+            for i in gone.into_iter().rev() {
+                cmds.extend(close_tab(model, i));
+            }
+            model.status_message = format!("Deleted '{}'", name_of(&path));
+            cmds.push(Cmd::LoadGitStatus);
+            cmds
+        }
         Msg::FileSaved { path } => {
             for i in model.all_tabs_for(&path) {
                 model.tabs[i].buffer.mark_saved();
@@ -320,6 +383,13 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             Vec::new()
         }
     }
+}
+
+/// The file name of a path, for status messages.
+fn name_of(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
 /// The text input the current focus routes keys to, and whether it is multi-line.

@@ -2,6 +2,16 @@
 
 use super::*;
 
+/// Runs a file-tree action on the selected row. A no-op unless the Files panel
+/// is the active one — the shortcuts belong to the tree, not the other panels.
+fn on_selected_row(model: &mut Model, f: impl Fn(&mut Model, usize) -> Vec<Cmd>) -> Vec<Cmd> {
+    if model.sidebar.active != Panel::Files {
+        return Vec::new();
+    }
+    let idx = model.sidebar.files.selected;
+    f(model, idx)
+}
+
 pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
     match action {
         Action::Quit => {
@@ -136,6 +146,12 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
             post_nav_persist(model)
         }
         Action::Activate => activate_selection(model),
+
+        // ----- File tree entry management (Files panel only) -----
+        Action::NewFile => on_selected_row(model, |m, i| new_entry_dialog(m, i, false)),
+        Action::NewFolder => on_selected_row(model, |m, i| new_entry_dialog(m, i, true)),
+        Action::RenameEntry => on_selected_row(model, rename_dialog),
+        Action::DeleteEntry => on_selected_row(model, delete_dialog),
 
         // ----- Search (typing handled by the focused input widget) -----
         Action::SearchToggleField => {

@@ -18,7 +18,7 @@ use ratatui::widgets::{Block, Paragraph};
 
 use crate::app::model::{Model, Panel};
 
-pub use files::file_row_at;
+pub use files::{FileHit, file_hit, file_row_at};
 pub use git::{GitHit, git_hit};
 pub use search::{SearchHit, search_hit};
 pub use settings::settings_row_at;

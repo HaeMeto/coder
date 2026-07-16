@@ -38,6 +38,12 @@ pub enum Action {
     NavDown,
     Activate,
 
+    // File tree entry management (Files panel)
+    NewFile,
+    NewFolder,
+    RenameEntry,
+    DeleteEntry,
+
     // Search input (text editing is handled by the focused input widget itself)
     SearchSubmit,
     SearchToggleField,
@@ -104,7 +110,7 @@ pub fn resolve(key: KeyEvent, focus: Focus) -> Option<Action> {
     match focus {
         Focus::Terminal => resolve_terminal(key, ctrl),
         Focus::Editor => resolve_editor(key, ctrl, shift),
-        Focus::Sidebar => resolve_sidebar(key),
+        Focus::Sidebar => resolve_sidebar(key, ctrl, shift),
         Focus::SearchInput => resolve_search(key),
         Focus::GitCommit => resolve_git_commit(key),
         Focus::Find => resolve_find(key, shift),
@@ -172,8 +178,19 @@ fn resolve_editor(key: KeyEvent, ctrl: bool, shift: bool) -> Option<Action> {
     }
 }
 
-fn resolve_sidebar(key: KeyEvent) -> Option<Action> {
+fn resolve_sidebar(key: KeyEvent, ctrl: bool, shift: bool) -> Option<Action> {
+    // File-tree entry management. Ctrl+N / Ctrl+Shift+N create next to the
+    // selected row; the Files panel ignores them elsewhere.
+    if ctrl {
+        return match key.code {
+            KeyCode::Char('n' | 'N') if shift => Some(Action::NewFolder),
+            KeyCode::Char('n' | 'N') => Some(Action::NewFile),
+            _ => None,
+        };
+    }
     match key.code {
+        KeyCode::F(2) => Some(Action::RenameEntry),
+        KeyCode::Delete => Some(Action::DeleteEntry),
         KeyCode::Up => Some(Action::NavUp),
         KeyCode::Down => Some(Action::NavDown),
         KeyCode::Enter | KeyCode::Right => Some(Action::Activate),

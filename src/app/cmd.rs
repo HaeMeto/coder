@@ -13,6 +13,12 @@ use crate::services::lsp::{LspClientMsg, Token};
 /// tokio and sends the result back as a `Msg`.
 pub enum Cmd {
     ScanDir(PathBuf),
+    /// Create a new empty file (`is_dir` = false) or directory, then re-scan its parent.
+    CreatePath { path: PathBuf, is_dir: bool },
+    /// Rename a file/directory, then re-scan its parent.
+    RenamePath { from: PathBuf, to: PathBuf },
+    /// Delete a file (or a directory and its contents), then re-scan its parent.
+    DeletePath(PathBuf),
     ReadFile(PathBuf),
     /// Re-read a file that changed on disk (result -> `Msg::FileReloaded`).
     ReloadFile(PathBuf),
@@ -156,6 +162,22 @@ fn first_line(s: &str) -> String {
         .to_string()
 }
 
+/// Re-scans the directory holding `path` so the file tree picks up a create,
+/// rename or delete.
+fn rescan_parent(path: &std::path::Path, tx: &UnboundedSender<Msg>) {
+    let Some(dir) = path.parent().map(PathBuf::from) else {
+        return;
+    };
+    match services::fs::scan_dir(&dir) {
+        Ok(entries) => {
+            let _ = tx.send(Msg::DirScanned { path: dir, entries });
+        }
+        Err(e) => {
+            let _ = tx.send(Msg::Error(format!("could not scan directory: {e}")));
+        }
+    }
+}
+
 /// Loads the git status and sends `Msg::GitStatusLoaded`.
 fn send_git_status(root: &std::path::Path, tx: &UnboundedSender<Msg>) {
     let status = services::git::load_status(root);
@@ -182,6 +204,55 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
                     }
                     Err(e) => {
                         let _ = tx.send(Msg::Error(format!("could not scan directory: {e}")));
+                    }
+                }
+            });
+        }
+        Cmd::CreatePath { path, is_dir } => {
+            tokio::task::spawn_blocking(move || {
+                let result = if is_dir {
+                    services::fs::create_dir(&path)
+                } else {
+                    services::fs::create_file(&path)
+                };
+                match result {
+                    Ok(()) => {
+                        let name = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        let _ = tx.send(Msg::Status(format!("Created '{name}'")));
+                        rescan_parent(&path, &tx);
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Msg::Error(format!("could not create: {e}")));
+                    }
+                }
+            });
+        }
+        Cmd::RenamePath { from, to } => {
+            tokio::task::spawn_blocking(move || {
+                match services::fs::rename_path(&from, &to) {
+                    Ok(()) => {
+                        rescan_parent(&to, &tx);
+                        // Open tabs under the old path follow it; update does the rest.
+                        let _ = tx.send(Msg::PathRenamed { from, to });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Msg::Error(format!("could not rename: {e}")));
+                    }
+                }
+            });
+        }
+        Cmd::DeletePath(path) => {
+            tokio::task::spawn_blocking(move || {
+                match services::fs::delete_path(&path) {
+                    Ok(()) => {
+                        rescan_parent(&path, &tx);
+                        let _ = tx.send(Msg::PathDeleted(path));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Msg::Error(format!("could not delete: {e}")));
                     }
                 }
             });
