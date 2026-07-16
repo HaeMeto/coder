@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use crossterm::event::{KeyEvent, MouseEvent};
 
 use crate::services::git::GitEntry;
+use crate::services::lsp::{CompletionItem, LspHandle, RawDiagnostic, RawTextEdit, Token};
 use crate::services::pty::PtySession;
 use crate::services::search::SearchMatch;
 
@@ -55,6 +56,58 @@ pub enum Msg {
     FileReloaded {
         path: PathBuf,
         text: String,
+    },
+
+    // LSP
+    /// A language server was spawned; carries its intent-sender handle.
+    LspSessionReady {
+        language: String,
+        handle: LspHandle,
+    },
+    /// The server finished its `initialize` handshake.
+    LspInitialized {
+        language: String,
+    },
+    /// Diagnostics for a file (raw LSP UTF-16 positions; converted in update).
+    LspDiagnostics {
+        path: PathBuf,
+        diagnostics: Vec<RawDiagnostic>,
+    },
+    /// Completion results for an earlier request (guarded by `token`).
+    LspCompletions {
+        token: Token,
+        items: Vec<CompletionItem>,
+    },
+    /// Formatting edits for an earlier request (guarded by `token`).
+    LspFormatEdits {
+        token: Token,
+        edits: Vec<RawTextEdit>,
+    },
+    /// The server process exited.
+    LspExited {
+        language: String,
+    },
+    /// The server could not be started or errored fatally.
+    LspError {
+        language: String,
+        message: String,
+    },
+    /// A debounced didChange fired; send it only if the buffer version matches.
+    DidChangeDue {
+        path: PathBuf,
+        version: u64,
+    },
+    /// A standalone formatter produced new text for a file.
+    FormatterOutput {
+        path: PathBuf,
+        text: String,
+        token: Token,
+        save_after: bool,
+    },
+    /// A standalone linter produced diagnostics as `(line0, col0, message)`.
+    LinterDiagnostics {
+        path: PathBuf,
+        items: Vec<(usize, usize, String)>,
     },
 
     // Terminal

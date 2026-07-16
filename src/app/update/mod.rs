@@ -24,6 +24,7 @@ mod dialog;
 mod editor;
 mod find;
 mod git;
+mod lsp;
 mod mouse;
 mod search;
 mod sidebar_nav;
@@ -47,6 +48,12 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             // If a modal dialog is open it captures all keyboard input.
             if model.dialog.is_some() {
                 return dialog_key(model, key);
+            }
+            // The completion popup (editor sub-mode) gets first refusal on keys.
+            if model.completion.is_some()
+                && let Some(cmds) = lsp::completion_key(model, key)
+            {
+                return cmds;
             }
             // A focused text input handles its own editing/motion keys first and
             // reports back what it did; only keys it ignores fall through to the
@@ -109,8 +116,12 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             } else {
                 ensure_cursor_visible(model);
             }
-            // Load the HEAD content for the change gutter.
-            vec![Cmd::LoadHeadText(path)]
+            // Load the HEAD content for the change gutter, and open the document
+            // with its language server (if any).
+            let tab = model.tabs.len() - 1;
+            let mut cmds = vec![Cmd::LoadHeadText(path)];
+            cmds.extend(lsp::open_tab(model, tab));
+            cmds
         }
         Msg::HeadTextLoaded { path, text } => {
             // Update every open tab for this file (a normal tab and its diff tab).
@@ -154,8 +165,11 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                 model.tabs[i].buffer.mark_saved();
             }
             model.status_message = format!("Saved: {}", path.display());
-            // Refresh git status after saving.
-            vec![Cmd::LoadGitStatus]
+            // Refresh git status, notify the language server, and run a linter.
+            let mut cmds = vec![Cmd::LoadGitStatus];
+            cmds.extend(lsp::did_save(model, &path));
+            cmds.extend(lsp::run_linter(model, &path));
+            cmds
         }
         Msg::GitStatusLoaded {
             branch,
@@ -187,8 +201,9 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                     }
                 })
                 .collect();
+            let mut cmds: Vec<Cmd> = Vec::new();
             for i in stale.into_iter().rev() {
-                close_tab(model, i);
+                cmds.extend(close_tab(model, i));
             }
             let g = &mut model.sidebar.git;
             g.branch = branch;
@@ -204,12 +219,14 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                 g.selected = len.saturating_sub(1);
             }
             // Refresh the change gutter for open files (HEAD may have moved after a commit/revert).
-            model
-                .tabs
-                .iter()
-                .filter_map(|t| t.buffer.path.clone())
-                .map(Cmd::LoadHeadText)
-                .collect()
+            cmds.extend(
+                model
+                    .tabs
+                    .iter()
+                    .filter_map(|t| t.buffer.path.clone())
+                    .map(Cmd::LoadHeadText),
+            );
+            cmds
         }
         Msg::SearchResults { query, matches } => {
             if query == model.sidebar.search.query.content() {
@@ -264,6 +281,36 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             model.status_message = "Terminal closed".to_string();
             Vec::new()
         }
+        Msg::LspSessionReady { language, handle } => {
+            model.lsp.starting.remove(&language);
+            model.lsp.sessions.insert(language, handle);
+            Vec::new()
+        }
+        Msg::LspInitialized { language } => lsp::on_initialized(model, &language),
+        Msg::LspDiagnostics { path, diagnostics } => {
+            lsp::store_diagnostics(model, path, diagnostics);
+            Vec::new()
+        }
+        Msg::LspCompletions { token, items } => lsp::completions_arrived(model, token, items),
+        Msg::LspFormatEdits { token, edits } => lsp::format_edits_arrived(model, token, edits),
+        Msg::LspExited { language } => {
+            lsp::remove_server(model, &language);
+            model.status_message = format!("Language server '{language}' stopped");
+            Vec::new()
+        }
+        Msg::LspError { language, message } => {
+            lsp::remove_server(model, &language);
+            model.status_message = format!("LSP ({language}): {message}");
+            Vec::new()
+        }
+        Msg::DidChangeDue { path, version } => lsp::change_due(model, &path, version),
+        Msg::FormatterOutput {
+            path,
+            text,
+            token,
+            save_after,
+        } => lsp::formatter_output(model, path, text, token, save_after),
+        Msg::LinterDiagnostics { path, items } => lsp::linter_diagnostics(model, path, items),
         Msg::Status(s) => {
             model.status_message = s;
             Vec::new()

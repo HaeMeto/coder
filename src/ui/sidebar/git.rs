@@ -24,11 +24,20 @@ pub enum GitRowKind {
     /// Separator line between the action row and the file list.
     Separator,
     /// A directory node in the change tree (display only, not selectable).
-    Dir { name: String, depth: usize },
+    Dir {
+        name: String,
+        depth: usize,
+    },
     /// A staged file: `idx` into `staged`, `depth` in the tree.
-    Staged { idx: usize, depth: usize },
+    Staged {
+        idx: usize,
+        depth: usize,
+    },
     /// An unstaged file: `idx` into `unstaged`, `depth` in the tree.
-    Unstaged { idx: usize, depth: usize },
+    Unstaged {
+        idx: usize,
+        depth: usize,
+    },
     Info(&'static str),
 }
 
@@ -54,7 +63,10 @@ fn tree_rows(
             common += 1;
         }
         for (d, name) in dirs.iter().enumerate().skip(common) {
-            rows.push(GitRowKind::Dir { name: name.to_string(), depth: d });
+            rows.push(GitRowKind::Dir {
+                name: name.to_string(),
+                depth: d,
+            });
         }
         rows.push(make_row(i, dirs.len()));
         prev = dirs.to_vec();
@@ -101,13 +113,21 @@ pub fn git_layout(model: &Model, area: Rect) -> GitLayout {
             rows.push(GitRowKind::StagedHeader);
             rows.push(GitRowKind::UnstageAll);
             rows.push(GitRowKind::Separator);
-            tree_rows(&g.staged, |idx, depth| GitRowKind::Staged { idx, depth }, &mut rows);
+            tree_rows(
+                &g.staged,
+                |idx, depth| GitRowKind::Staged { idx, depth },
+                &mut rows,
+            );
         }
         if !g.unstaged.is_empty() {
             rows.push(GitRowKind::ChangesHeader);
             rows.push(GitRowKind::StageAll);
             rows.push(GitRowKind::Separator);
-            tree_rows(&g.unstaged, |idx, depth| GitRowKind::Unstaged { idx, depth }, &mut rows);
+            tree_rows(
+                &g.unstaged,
+                |idx, depth| GitRowKind::Unstaged { idx, depth },
+                &mut rows,
+            );
         }
         if g.staged.is_empty() && g.unstaged.is_empty() {
             rows.push(GitRowKind::Info("No changes"));
@@ -214,7 +234,14 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
             Style::new().fg(th.fg),
         )))
         .style(Style::new().bg(th.bg_alt));
-        frame.render_widget(branch, Rect { y: l.branch_y, height: 1, ..area });
+        frame.render_widget(
+            branch,
+            Rect {
+                y: l.branch_y,
+                height: 1,
+                ..area
+            },
+        );
     }
 
     // Scrollable change list.
@@ -281,7 +308,14 @@ fn render_git_actions(frame: &mut Frame, area: Rect, l: &GitLayout, model: &Mode
         cell(&push_label, push_enabled, w2),
     ];
     let p = Paragraph::new(Line::from(spans)).style(Style::new().bg(th.bg_alt));
-    frame.render_widget(p, Rect { y: l.actions_y, height: 1, ..area });
+    frame.render_widget(
+        p,
+        Rect {
+            y: l.actions_y,
+            height: 1,
+            ..area
+        },
+    );
 }
 
 /// Converts a single git content row into a drawable `Line`.
@@ -290,19 +324,16 @@ fn git_row_line(model: &Model, kind: &GitRowKind, width: usize) -> Line<'static>
     let th = &model.theme;
     match kind {
         GitRowKind::StagedHeader => header_line(format!(" STAGED ({})", g.staged.len()), th),
-        GitRowKind::ChangesHeader => {
-            header_line(format!(" CHANGES ({})", g.unstaged.len()), th)
-        }
+        GitRowKind::ChangesHeader => header_line(format!(" CHANGES ({})", g.unstaged.len()), th),
         GitRowKind::Info(s) => {
             Line::from(Span::styled(format!(" {s}"), Style::new().fg(th.fg_dim)))
         }
         GitRowKind::StageAll => action_line(" Stage All", "+", th.git_added, th, width),
         GitRowKind::UnstageAll => action_line(" Unstage All", "-", th.git_deleted, th, width),
-        GitRowKind::Separator => Line::from(Span::styled(
-            "─".repeat(width),
-            Style::new().fg(th.border),
-        ))
-        .style(Style::new().bg(th.bg_alt)),
+        GitRowKind::Separator => {
+            Line::from(Span::styled("─".repeat(width), Style::new().fg(th.border)))
+                .style(Style::new().bg(th.bg_alt))
+        }
         GitRowKind::Dir { name, depth } => Line::from(vec![
             Span::raw("  ".repeat(*depth)),
             Span::styled("▾ ", Style::new().fg(th.fg_dim)),
@@ -371,7 +402,11 @@ fn entry_line(
     // indent + prefix (3) + name + suffix (4) = width
     let avail = width.saturating_sub(indent.len() + 7);
     let name_field = format!("{:<avail$}", fit_path(name, avail));
-    let line_bg = if selected { th.selected_bg() } else { th.bg_alt };
+    let line_bg = if selected {
+        th.selected_bg()
+    } else {
+        th.bg_alt
+    };
 
     let mut spans = vec![
         Span::raw(indent),
@@ -381,12 +416,18 @@ fn entry_line(
     if staged {
         // Last 4 columns: "  - " → unstage button at width-2.
         spans.push(Span::raw("  "));
-        spans.push(Span::styled("-".to_string(), Style::new().fg(th.git_deleted)));
+        spans.push(Span::styled(
+            "-".to_string(),
+            Style::new().fg(th.git_deleted),
+        ));
         spans.push(Span::raw(" "));
     } else {
         let revert = if model.ascii_icons { "x" } else { "↺" };
         // Last 4 columns: "↺ + " → revert at width-4, stage at width-2 (a space between them).
-        spans.push(Span::styled(revert.to_string(), Style::new().fg(th.git_deleted)));
+        spans.push(Span::styled(
+            revert.to_string(),
+            Style::new().fg(th.git_deleted),
+        ));
         spans.push(Span::raw(" "));
         spans.push(Span::styled("+".to_string(), Style::new().fg(th.git_added)));
         spans.push(Span::raw(" "));
@@ -429,13 +470,24 @@ fn render_commit_box(frame: &mut Frame, area: Rect, l: &GitLayout, model: &Model
     // Commit button.
     let label = " Commit ";
     let can_commit = !g.staged.is_empty() && !g.commit.content().trim().is_empty();
-    let btn_bg = if can_commit { th.accent } else { th.tab_inactive_bg };
+    let btn_bg = if can_commit {
+        th.accent
+    } else {
+        th.tab_inactive_bg
+    };
     let btn = Paragraph::new(Line::from(Span::styled(
         format!("{label:^width$}"),
         Style::new().add_modifier(Modifier::BOLD),
     )))
     .style(Style::new().bg(btn_bg));
-    frame.render_widget(btn, Rect { y: l.button_y, height: 1, ..area });
+    frame.render_widget(
+        btn,
+        Rect {
+            y: l.button_y,
+            height: 1,
+            ..area
+        },
+    );
 }
 
 /// Target of a mouse click in the Git panel.

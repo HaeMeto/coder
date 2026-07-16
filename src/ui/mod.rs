@@ -1,6 +1,7 @@
 //! view(): draws the Model with ratatui + layout computation (shared with mouse hit-testing).
 
 pub mod activity_bar;
+pub mod completion;
 pub mod dialog;
 pub mod editor;
 pub mod find;
@@ -133,6 +134,8 @@ pub fn view(frame: &mut Frame, model: &Model) {
     }
     // The find widget floats over the top-right of the editor.
     find::render(frame, a.editor, model);
+    // The completion popup floats at the cursor.
+    completion::render(frame, a.editor, a.gutter_w, model);
     if a.terminal_open && a.terminal.height > 0 {
         terminal::render(frame, a.terminal, model);
     }

@@ -2,13 +2,15 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::app::model::{DiffRow, Focus, Model};
+use crate::app::model::{Diagnostic, DiffRow, Focus, Model};
 use crate::core::buffer::Cursor;
+use crate::core::theme::Theme;
 use crate::services::git::GutterKind;
+use crate::services::lsp::Severity;
 
 pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
     frame.render_widget(
@@ -43,6 +45,26 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
     let display = model.diff_rows();
     let disp_start = model.diff_start(&display, top);
 
+    // Diagnostics for this file (empty for files with no language server).
+    let diags: &[Diagnostic] = buf
+        .path
+        .as_ref()
+        .and_then(|p| model.diagnostics.get(p))
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+    // Most-severe diagnostic per line, for coloring the line number.
+    let mut sev_by_line: std::collections::HashMap<usize, Severity> = std::collections::HashMap::new();
+    for d in diags {
+        sev_by_line
+            .entry(d.line)
+            .and_modify(|s| {
+                if severity_rank(d.severity) < severity_rank(*s) {
+                    *s = d.severity;
+                }
+            })
+            .or_insert(d.severity);
+    }
+
     let mut lines: Vec<Line> = Vec::with_capacity(height);
     for i in 0..height {
         match display.get(disp_start + i) {
@@ -50,7 +72,10 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
             Some(DiffRow::Real(row)) => {
                 let row = *row;
                 let is_cursor_line = row == buf.cursor.line;
-                let ln_style = if is_cursor_line {
+                // A diagnostic on this line recolors its line number by severity.
+                let ln_style = if let Some(sev) = sev_by_line.get(&row) {
+                    Style::new().fg(severity_color(&model.theme, *sev))
+                } else if is_cursor_line {
                     Style::new().fg(model.theme.fg)
                 } else {
                     Style::new().fg(model.theme.line_number)
@@ -95,18 +120,102 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
     let p = Paragraph::new(lines).style(Style::new().bg(model.theme.bg));
     frame.render_widget(p, area);
 
-    // Overlay the selection background per cell.
+    // Overlay diagnostic squiggles, then the selection background per cell.
+    if !diags.is_empty() {
+        overlay_diagnostics(frame, area, buf, gutter_w, diags, &display, disp_start);
+    }
     if let Some((start, end)) = selection {
         overlay_selection(frame, area, model, buf, gutter_w, start, end, &display, disp_start);
     }
 
     // Position the cursor (only when the editor is focused).
-    if model.focus == Focus::Editor {
-        let cur_disp = real_display_index(&display, buf.cursor.line);
-        let cy = area.y + cur_disp.saturating_sub(disp_start) as u16;
-        let cx = area.x + gutter_w + (buf.cursor.col.saturating_sub(scroll_x)) as u16;
-        if cy < area.y + area.height && cx < area.x + area.width {
-            frame.set_cursor_position((cx, cy));
+    if model.focus == Focus::Editor
+        && let Some((cx, cy)) = cursor_screen_pos(model, area, gutter_w)
+    {
+        frame.set_cursor_position((cx, cy));
+    }
+}
+
+/// Screen cell of the active buffer's cursor within the editor area, or `None`
+/// when it is scrolled off. Shared by the caret and the completion popup so they
+/// never disagree (the same discipline as `compute_areas`).
+pub fn cursor_screen_pos(model: &Model, area: Rect, gutter_w: u16) -> Option<(u16, u16)> {
+    let buf = model.active_buffer()?;
+    let display = model.diff_rows();
+    let disp_start = model.diff_start(&display, buf.scroll_y);
+    let cur_disp = real_display_index(&display, buf.cursor.line);
+    if cur_disp < disp_start {
+        return None;
+    }
+    let cy = area.y + (cur_disp - disp_start) as u16;
+    let cx = area.x + gutter_w + (buf.cursor.col.saturating_sub(buf.scroll_x)) as u16;
+    if cy >= area.y + area.height || cx >= area.x + area.width {
+        return None;
+    }
+    Some((cx, cy))
+}
+
+/// Lower rank = more severe (Error wins over Warning wins over Info/Hint).
+fn severity_rank(sev: Severity) -> u8 {
+    match sev {
+        Severity::Error => 0,
+        Severity::Warning => 1,
+        Severity::Info => 2,
+        Severity::Hint => 3,
+    }
+}
+
+/// The color used to mark a diagnostic of the given severity.
+fn severity_color(th: &Theme, sev: Severity) -> Color {
+    match sev {
+        Severity::Error => th.git_deleted,
+        Severity::Warning => th.git_modified,
+        Severity::Info | Severity::Hint => th.accent,
+    }
+}
+
+/// Underlines each diagnostic's range with a severity-colored underline.
+#[allow(clippy::too_many_arguments)]
+fn overlay_diagnostics(
+    frame: &mut Frame,
+    area: Rect,
+    buf: &crate::core::buffer::Buffer,
+    gutter_w: u16,
+    diags: &[Diagnostic],
+    display: &[DiffRow],
+    disp_start: usize,
+) {
+    let scroll_x = buf.scroll_x;
+    let text_w = area.width.saturating_sub(gutter_w);
+    let theme_color = |sev| match sev {
+        Severity::Error => Color::Red,
+        Severity::Warning => Color::Yellow,
+        Severity::Info | Severity::Hint => Color::Cyan,
+    };
+    let bufmut = frame.buffer_mut();
+    for d in diags {
+        let disp = real_display_index(display, d.line);
+        if disp < disp_start || disp >= disp_start + area.height as usize {
+            continue;
+        }
+        let y = area.y + (disp - disp_start) as u16;
+        let color = theme_color(d.severity);
+        for col in d.col_start..d.col_end {
+            if col < scroll_x {
+                continue;
+            }
+            let vis = (col - scroll_x) as u16;
+            if vis >= text_w {
+                break;
+            }
+            let x = area.x + gutter_w + vis;
+            if let Some(cell) = bufmut.cell_mut((x, y)) {
+                cell.set_style(
+                    Style::new()
+                        .add_modifier(Modifier::UNDERLINED)
+                        .underline_color(color),
+                );
+            }
         }
     }
 }

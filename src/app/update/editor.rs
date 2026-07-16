@@ -4,11 +4,17 @@ use super::*;
 
 /// Applies an editor mutation and keeps the cursor visible.
 pub(super) fn edit(model: &mut Model, f: impl FnOnce(&mut Buffer)) -> Vec<Cmd> {
+    let before = model.active_buffer().map(|b| b.version);
     if let Some(buf) = model.active_buffer_mut() {
         f(buf);
     }
     ensure_cursor_visible(model);
-    Vec::new()
+    // Only tell the language server when the text actually changed (skip motions).
+    if before != model.active_buffer().map(|b| b.version) {
+        super::lsp::notify_change(model)
+    } else {
+        Vec::new()
+    }
 }
 
 /// Applies the enabled format-on-save actions to the active buffer (before writing).

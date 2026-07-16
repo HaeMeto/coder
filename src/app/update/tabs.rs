@@ -19,17 +19,21 @@ pub(super) fn select_panel(model: &mut Model, p: Panel) -> Vec<Cmd> {
     }
 }
 
-pub(super) fn close_active_tab(model: &mut Model) {
+pub(super) fn close_active_tab(model: &mut Model) -> Vec<Cmd> {
     if let Some(i) = model.active_tab {
-        close_tab(model, i);
+        close_tab(model, i)
+    } else {
+        Vec::new()
     }
 }
 
-/// Closes the tab at the given index and fixes up the active tab.
-pub(super) fn close_tab(model: &mut Model, i: usize) {
+/// Closes the tab at the given index and fixes up the active tab. Returns a
+/// `didClose` for the language server when the last tab of the file is closed.
+pub(super) fn close_tab(model: &mut Model, i: usize) -> Vec<Cmd> {
     if i >= model.tabs.len() {
-        return;
+        return Vec::new();
     }
+    let path = model.tabs[i].buffer.path.clone();
     model.tabs.remove(i);
     match model.active_tab {
         Some(a) if a == i => {
@@ -44,6 +48,13 @@ pub(super) fn close_tab(model: &mut Model, i: usize) {
         _ => {}
     }
     model.invalidate_highlight();
+    // Only notify the server once no tab holds the file anymore.
+    match path {
+        Some(p) if !model.tabs.iter().any(|t| t.buffer.path.as_deref() == Some(p.as_path())) => {
+            super::lsp::did_close(model, &p)
+        }
+        _ => Vec::new(),
+    }
 }
 
 pub(super) fn cycle_tab(model: &mut Model, delta: isize) {

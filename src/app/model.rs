@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::core::buffer::Buffer;
+use crate::core::buffer::{Buffer, Cursor};
 use crate::core::filetree::FileTree;
 use crate::core::highlight::{self, HlLine, Highlighter};
 use crate::core::text_input::TextInputState;
@@ -434,6 +434,44 @@ impl Default for LayoutState {
     }
 }
 
+/// Running language servers, keyed by language id.
+#[derive(Default)]
+pub struct LspState {
+    /// Initialized-or-initializing servers we hold a handle for.
+    pub sessions: std::collections::HashMap<String, crate::services::lsp::LspHandle>,
+    /// Languages whose server spawn is in flight (prevents a double-spawn).
+    pub starting: std::collections::HashSet<String>,
+    /// Languages whose server finished the `initialize` handshake.
+    pub initialized: std::collections::HashSet<String>,
+}
+
+/// The open completion popup: items from the server plus selection + the range
+/// they replace. `requested_version`/`tab_index` discard a stale response.
+pub struct CompletionState {
+    pub items: Vec<crate::services::lsp::CompletionItem>,
+    pub selected: usize,
+    /// Start of the identifier prefix being completed (replaced on accept).
+    pub anchor: Cursor,
+    /// The tab the popup belongs to (guards accept against a tab switch).
+    pub tab_index: usize,
+}
+
+/// An outstanding LSP format request: whether to write the file once its edits
+/// apply (format-on-save). Staleness is guarded separately by the request token.
+pub struct PendingFormat {
+    pub save_after: bool,
+}
+
+/// A diagnostic in buffer char coordinates (converted from LSP on receipt).
+#[derive(Clone)]
+pub struct Diagnostic {
+    pub line: usize,
+    pub col_start: usize,
+    pub col_end: usize,
+    pub severity: crate::services::lsp::Severity,
+    pub message: String,
+}
+
 pub struct Model {
     pub root: PathBuf,
     pub tabs: Vec<Tab>,
@@ -475,6 +513,16 @@ pub struct Model {
     pub find: FindState,
     /// Last left-click (time, column, row) for editor double-click detection.
     pub last_click: Option<(std::time::Instant, u16, u16)>,
+    /// Installed language extensions (LSP / formatter / linter manifests).
+    pub extensions: crate::services::extensions::ExtensionRegistry,
+    /// Running language servers.
+    pub lsp: LspState,
+    /// Diagnostics per file (buffer char coordinates).
+    pub diagnostics: std::collections::HashMap<PathBuf, Vec<Diagnostic>>,
+    /// The open completion popup, if any.
+    pub completion: Option<CompletionState>,
+    /// An in-flight format request awaiting edits.
+    pub pending_format: Option<PendingFormat>,
 }
 
 /// One visual row of the editor. In a diff tab, removed lines are woven in as
@@ -529,6 +577,11 @@ impl Model {
             active_deleted: Vec::new(),
             find: FindState::default(),
             last_click: None,
+            extensions: crate::services::extensions::load_all(),
+            lsp: LspState::default(),
+            diagnostics: std::collections::HashMap::new(),
+            completion: None,
+            pending_format: None,
             root,
         }
     }
@@ -716,6 +769,24 @@ impl Model {
 
     pub fn active_buffer(&self) -> Option<&Buffer> {
         self.active_tab.map(|i| &self.tabs[i].buffer)
+    }
+
+    /// The diagnostic under the active buffer's cursor, most severe first — used
+    /// by the status bar to surface the message (a "hover" without LSP hover).
+    pub fn diagnostic_at_cursor(&self) -> Option<&Diagnostic> {
+        let buf = self.active_buffer()?;
+        let path = buf.path.as_ref()?;
+        let (line, col) = (buf.cursor.line, buf.cursor.col);
+        self.diagnostics
+            .get(path)?
+            .iter()
+            .filter(|d| d.line == line && col >= d.col_start && col <= d.col_end)
+            .min_by_key(|d| match d.severity {
+                crate::services::lsp::Severity::Error => 0u8,
+                crate::services::lsp::Severity::Warning => 1,
+                crate::services::lsp::Severity::Info => 2,
+                crate::services::lsp::Severity::Hint => 3,
+            })
     }
 
     pub fn active_buffer_mut(&mut self) -> Option<&mut Buffer> {

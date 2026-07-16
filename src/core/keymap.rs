@@ -28,6 +28,10 @@ pub enum Action {
     Paste,
     Undo,
     Redo,
+    /// Explicitly request a completion popup (Ctrl+Space).
+    TriggerCompletion,
+    /// Format the active buffer via its language server / formatter (Ctrl+Alt+F).
+    Format,
 
     // Sidebar navigation
     NavUp,
@@ -131,6 +135,7 @@ fn resolve_git_commit(key: KeyEvent) -> Option<Action> {
 }
 
 fn resolve_editor(key: KeyEvent, ctrl: bool, shift: bool) -> Option<Action> {
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
     if ctrl {
         return match key.code {
             KeyCode::Char('c') => Some(Action::Copy),
@@ -139,6 +144,9 @@ fn resolve_editor(key: KeyEvent, ctrl: bool, shift: bool) -> Option<Action> {
             KeyCode::Char('z') => Some(Action::Undo),
             KeyCode::Char('y') => Some(Action::Redo),
             KeyCode::Char('a') => Some(Action::SelectAll),
+            // Ctrl+Space: request completions; Ctrl+Alt+F: format the buffer.
+            KeyCode::Char(' ') => Some(Action::TriggerCompletion),
+            KeyCode::Char('f') if alt => Some(Action::Format),
             // Ctrl+Left/Right: jump by word (Shift extends the selection).
             KeyCode::Left => Some(Action::Move(Motion::WordLeft, shift)),
             KeyCode::Right => Some(Action::Move(Motion::WordRight, shift)),

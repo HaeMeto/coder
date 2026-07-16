@@ -133,6 +133,45 @@ impl Buffer {
         }
     }
 
+    // ----- LSP position conversion (UTF-16 code units <-> char columns) -----
+    //
+    // LSP `Position.character` counts UTF-16 code units within a line, while the
+    // rope (and `Cursor.col`) uses Unicode-scalar (char) indices. These differ
+    // for any non-BMP character (emoji, some CJK), so every LSP boundary must
+    // convert. Do this only here (rope is the source of truth), never in async.
+
+    /// Char column within a line -> UTF-16 code-unit offset (outgoing to LSP).
+    pub fn char_col_to_utf16(&self, line: usize, col: usize) -> u32 {
+        if line >= self.rope.len_lines() {
+            return 0;
+        }
+        let slice = self.rope.line(line);
+        let col = col.min(self.line_len(line));
+        slice.char_to_utf16_cu(col) as u32
+    }
+
+    /// UTF-16 code-unit offset within a line -> char column (incoming from LSP),
+    /// clamped to the line's content length.
+    pub fn utf16_to_char_col(&self, line: usize, utf16: u32) -> usize {
+        if line >= self.rope.len_lines() {
+            return 0;
+        }
+        let slice = self.rope.line(line);
+        let max_col = self.line_len(line);
+        let max_u16 = slice.char_to_utf16_cu(max_col);
+        let u = (utf16 as usize).min(max_u16);
+        slice.utf16_cu_to_char(u).min(max_col)
+    }
+
+    /// Absolute char index of an LSP position (line + UTF-16 character). Clamps a
+    /// past-the-end line to the document end (LSP edits can target EOF).
+    pub fn lsp_pos_to_char(&self, line: usize, utf16: u32) -> usize {
+        if line >= self.rope.len_lines() {
+            return self.rope.len_chars();
+        }
+        self.rope.line_to_char(line) + self.utf16_to_char_col(line, utf16)
+    }
+
     // ----- Selection -----
 
     /// The selection's (start, end) cursors in sorted order.
@@ -392,12 +431,23 @@ impl Buffer {
         });
     }
 
+    /// The current line's leading whitespace, clipped at the cursor so pressing
+    /// Enter *inside* the indent only carries the part the cursor is past.
+    fn indent_at_cursor(&self) -> String {
+        self.line_text(self.cursor.line)
+            .chars()
+            .take(self.cursor.col)
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .collect()
+    }
+
+    /// Inserts a line break, carrying the current line's indentation onto the
+    /// new line. The break and the indent are one edit, so undo takes both and
+    /// the typing group ends here.
     pub fn insert_newline(&mut self) {
-        self.insert_char('\n');
-        // Newlines should break the typing group.
-        if let Some(last) = self.undo_stack.last_mut() {
-            last.typing = false;
-        }
+        self.delete_selection_internal();
+        let indent = self.indent_at_cursor();
+        self.insert_str(&format!("\n{indent}"));
     }
 
     pub fn backspace(&mut self) {
@@ -579,6 +629,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn utf16_offsets_handle_emoji() {
+        // "a😀b": 'a'=1 utf16, '😀'=2 utf16 (surrogate pair), 'b'=1 utf16.
+        let b = Buffer::new(None, "a😀b");
+        // char col -> utf16
+        assert_eq!(b.char_col_to_utf16(0, 0), 0);
+        assert_eq!(b.char_col_to_utf16(0, 1), 1); // after 'a'
+        assert_eq!(b.char_col_to_utf16(0, 2), 3); // after emoji (1 + 2)
+        assert_eq!(b.char_col_to_utf16(0, 3), 4); // after 'b'
+        // utf16 -> char col (round trip)
+        assert_eq!(b.utf16_to_char_col(0, 0), 0);
+        assert_eq!(b.utf16_to_char_col(0, 1), 1);
+        assert_eq!(b.utf16_to_char_col(0, 3), 2);
+        assert_eq!(b.utf16_to_char_col(0, 4), 3);
+        // Out-of-range utf16 clamps to line end.
+        assert_eq!(b.utf16_to_char_col(0, 99), 3);
+    }
+
+    #[test]
+    fn anchor_selection_replaces_prefix() {
+        // Completion accept: select the typed prefix, then insert replaces it.
+        let mut b = Buffer::new(None, "prin");
+        b.cursor = Cursor { line: 0, col: 4 };
+        b.anchor = Some(Cursor { line: 0, col: 0 });
+        b.insert_str("println!");
+        assert_eq!(b.full_text(), "println!");
+        assert_eq!(b.cursor.col, 8);
+    }
+
+    #[test]
     fn insert_and_undo() {
         let mut b = Buffer::scratch();
         for c in "hello".chars() {
@@ -589,6 +668,58 @@ mod tests {
         assert_eq!(b.full_text(), "");
         b.redo();
         assert_eq!(b.full_text(), "hello");
+    }
+
+    #[test]
+    fn newline_keeps_indentation() {
+        let mut b = Buffer::new(None, "    let x = 1;");
+        b.cursor = Cursor { line: 0, col: 14 }; // end of line
+        b.insert_newline();
+        assert_eq!(b.full_text(), "    let x = 1;\n    ");
+        assert_eq!(b.cursor, Cursor { line: 1, col: 4 });
+    }
+
+    #[test]
+    fn newline_indent_splits_line_at_cursor() {
+        let mut b = Buffer::new(None, "\tfoobar");
+        b.cursor = Cursor { line: 0, col: 4 }; // between "foo" and "bar"
+        b.insert_newline();
+        assert_eq!(b.full_text(), "\tfoo\n\tbar");
+    }
+
+    #[test]
+    fn newline_inside_indent_carries_only_what_cursor_passed() {
+        let mut b = Buffer::new(None, "        x");
+        b.cursor = Cursor { line: 0, col: 4 }; // inside the 8-space indent
+        b.insert_newline();
+        assert_eq!(b.full_text(), "    \n        x");
+    }
+
+    #[test]
+    fn newline_on_unindented_line_adds_nothing() {
+        let mut b = Buffer::new(None, "x");
+        b.cursor = Cursor { line: 0, col: 1 };
+        b.insert_newline();
+        assert_eq!(b.full_text(), "x\n");
+    }
+
+    #[test]
+    fn newline_indent_undoes_as_one_step() {
+        let mut b = Buffer::new(None, "    ab");
+        b.cursor = Cursor { line: 0, col: 6 };
+        b.insert_newline();
+        assert_eq!(b.full_text(), "    ab\n    ");
+        b.undo();
+        assert_eq!(b.full_text(), "    ab", "the break and its indent undo together");
+    }
+
+    #[test]
+    fn newline_replaces_selection_then_indents() {
+        let mut b = Buffer::new(None, "    abcd");
+        b.cursor = Cursor { line: 0, col: 8 };
+        b.anchor = Some(Cursor { line: 0, col: 6 }); // select "cd"
+        b.insert_newline();
+        assert_eq!(b.full_text(), "    ab\n    ");
     }
 
     #[test]

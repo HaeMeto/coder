@@ -6,6 +6,8 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::app::msg::Msg;
 use crate::services;
+use crate::services::extensions::{ServerSpec, ToolSpec};
+use crate::services::lsp::{LspClientMsg, Token};
 
 /// A side-effect description returned by `update`. The executor runs these on
 /// tokio and sends the result back as a `Msg`.
@@ -49,9 +51,100 @@ pub enum Cmd {
         match_case: bool,
     },
     SpawnPty { rows: u16, cols: u16 },
+    /// Start a language server for a language (idempotent per language).
+    LspEnsureStarted {
+        language: String,
+        spec: ServerSpec,
+        root: PathBuf,
+    },
+    /// Send an intent to a running server via its handle's sender.
+    LspSend {
+        to_server: UnboundedSender<LspClientMsg>,
+        msg: LspClientMsg,
+    },
+    /// Debounce a didChange: after a short delay, emit `Msg::DidChangeDue`.
+    ScheduleDidChange { path: PathBuf, version: u64 },
+    /// Run a standalone formatter (stdin -> stdout) on the buffer text.
+    RunFormatterTool {
+        path: PathBuf,
+        spec: ToolSpec,
+        text: String,
+        token: Token,
+        save_after: bool,
+    },
+    /// Run a standalone linter (stdin -> stdout) and parse its diagnostics.
+    RunLinterTool {
+        path: PathBuf,
+        spec: ToolSpec,
+        text: String,
+    },
     SetClipboard(String),
     /// Persist user preferences (theme + settings) to the config file.
     SaveConfig(services::config::Config),
+}
+
+/// Runs a stdin->stdout tool: feeds `input` on stdin, returns its output.
+fn run_tool(spec: &ToolSpec, input: &str) -> std::io::Result<std::process::Output> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(&spec.command)
+        .args(&spec.args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(input.as_bytes())?;
+        // stdin drops here, closing the pipe so the tool sees EOF.
+    }
+    child.wait_with_output()
+}
+
+/// Parses common `path:line:col: message` linter output into `(line0, col0, msg)`.
+fn parse_linter_output(text: &str) -> Vec<(usize, usize, String)> {
+    // Matches the first `line:col` pair on a line, with an optional message tail.
+    let re = regex::Regex::new(r"(\d+):(\d+):?\s*(.*)").unwrap();
+    text.lines()
+        .filter_map(|line| {
+            let caps = re.captures(line)?;
+            let ln: usize = caps.get(1)?.as_str().parse().ok()?;
+            let col: usize = caps.get(2)?.as_str().parse().ok()?;
+            let msg = caps.get(3).map(|m| m.as_str().trim()).unwrap_or("").to_string();
+            // Linter positions are 1-based; store 0-based.
+            Some((ln.saturating_sub(1), col.saturating_sub(1), msg))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_linter_output;
+
+    #[test]
+    fn run_tool_pipes_stdin_to_stdout() {
+        use crate::services::extensions::ToolSpec;
+        // `tr a-z A-Z` uppercases stdin — a deterministic stand-in for a formatter.
+        if std::process::Command::new("tr").arg("--version").output().is_err() {
+            return;
+        }
+        let spec = ToolSpec {
+            command: "tr".to_string(),
+            args: vec!["a-z".to_string(), "A-Z".to_string()],
+        };
+        let out = super::run_tool(&spec, "hello").unwrap();
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "HELLO");
+    }
+
+    #[test]
+    fn parses_ruff_style_output() {
+        let out = "app.py:3:5: F401 unused import\napp.py:10:1: E302 expected 2 blank lines\nnoise line";
+        let items = parse_linter_output(out);
+        assert_eq!(items.len(), 2);
+        // 1-based input -> 0-based storage.
+        assert_eq!(items[0], (2, 4, "F401 unused import".to_string()));
+        assert_eq!(items[1].0, 9);
+    }
 }
 
 /// The first non-empty line of a message, for the one-line status bar.
@@ -281,6 +374,68 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
                     Err(e) => {
                         let _ = tx.send(Msg::Error(format!("could not start terminal: {e}")));
                     }
+                }
+            });
+        }
+        Cmd::LspEnsureStarted {
+            language,
+            spec,
+            root: server_root,
+        } => {
+            let handle = services::lsp::start(language.clone(), spec, server_root, tx.clone());
+            let _ = tx.send(Msg::LspSessionReady { language, handle });
+        }
+        Cmd::LspSend { to_server, msg } => {
+            // Sending on the unbounded intent channel is non-blocking.
+            let _ = to_server.send(msg);
+        }
+        Cmd::ScheduleDidChange { path, version } => {
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                let _ = tx.send(Msg::DidChangeDue { path, version });
+            });
+        }
+        Cmd::RunFormatterTool {
+            path,
+            spec,
+            text,
+            token,
+            save_after,
+        } => {
+            tokio::task::spawn_blocking(move || match run_tool(&spec, &text) {
+                Ok(out) if out.status.success() => {
+                    let formatted = String::from_utf8_lossy(&out.stdout).to_string();
+                    let _ = tx.send(Msg::FormatterOutput {
+                        path,
+                        text: formatted,
+                        token,
+                        save_after,
+                    });
+                }
+                result => {
+                    let detail = match &result {
+                        Ok(out) => first_line(&String::from_utf8_lossy(&out.stderr)),
+                        Err(e) => e.to_string(),
+                    };
+                    let _ = tx.send(Msg::Status(format!("formatter failed: {detail}")));
+                    // Don't lose the user's save: write the original text.
+                    if save_after {
+                        let _ = std::fs::write(&path, &text);
+                        let _ = tx.send(Msg::FileSaved { path });
+                    }
+                }
+            });
+        }
+        Cmd::RunLinterTool { path, spec, text } => {
+            tokio::task::spawn_blocking(move || {
+                if let Ok(out) = run_tool(&spec, &text) {
+                    let combined = format!(
+                        "{}{}",
+                        String::from_utf8_lossy(&out.stdout),
+                        String::from_utf8_lossy(&out.stderr)
+                    );
+                    let items = parse_linter_output(&combined);
+                    let _ = tx.send(Msg::LinterDiagnostics { path, items });
                 }
             });
         }

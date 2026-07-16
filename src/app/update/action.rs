@@ -42,20 +42,24 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         }
         Action::SelectPanel(p) => select_panel(model, p),
         Action::Save => {
+            // Cheap whitespace formatting runs synchronously first.
             apply_format_on_save(model);
-            if let Some(buf) = model.active_buffer() {
-                if let Some(path) = buf.path.clone() {
-                    let contents = buf.full_text();
-                    return vec![Cmd::WriteFile { path, contents }];
-                }
+            let Some(path) = model.active_buffer().and_then(|b| b.path.clone()) else {
                 model.status_message = "No file path to save to".to_string();
+                return Vec::new();
+            };
+            // When format-on-save is on and the language has a formatter (LSP or
+            // tool), format asynchronously and defer the write until edits apply.
+            if model.sidebar.settings.format_on_save {
+                let fmt = super::lsp::request_format(model, true);
+                if !fmt.is_empty() {
+                    return fmt;
+                }
             }
-            Vec::new()
+            let contents = model.active_buffer().map(|b| b.full_text()).unwrap_or_default();
+            vec![Cmd::WriteFile { path, contents }]
         }
-        Action::CloseTab => {
-            close_active_tab(model);
-            Vec::new()
-        }
+        Action::CloseTab => close_active_tab(model),
         Action::NextTab => {
             cycle_tab(model, 1);
             Vec::new()
@@ -66,11 +70,27 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         }
 
         // ----- Editor -----
-        Action::Insert(c) => edit(model, |b| b.insert_char(c)),
+        Action::Insert(c) => {
+            let mut cmds = edit(model, |b| b.insert_char(c));
+            // Auto-trigger completions while typing an identifier or after '.'.
+            if c.is_alphanumeric() || c == '_' || c == '.' {
+                cmds.extend(super::lsp::request_completion(model));
+            }
+            cmds
+        }
         Action::Newline => edit(model, |b| b.insert_newline()),
         Action::InsertTab => edit(model, |b| b.insert_str("    ")),
-        Action::Backspace => edit(model, |b| b.backspace()),
+        Action::Backspace => {
+            let mut cmds = edit(model, |b| b.backspace());
+            // Keep an open popup fresh as the prefix shrinks.
+            if model.completion.is_some() {
+                cmds.extend(super::lsp::request_completion(model));
+            }
+            cmds
+        }
         Action::Delete => edit(model, |b| b.delete_forward()),
+        Action::TriggerCompletion => super::lsp::request_completion(model),
+        Action::Format => super::lsp::request_format(model, false),
         Action::SelectAll => edit(model, |b| b.select_all()),
         Action::Undo => edit(model, |b| b.undo()),
         Action::Redo => edit(model, |b| b.redo()),
@@ -92,14 +112,16 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
                     buf.delete_selection();
                     model.internal_clipboard = sel.clone();
                     ensure_cursor_visible(model);
-                    return vec![Cmd::SetClipboard(sel)];
+                    let mut cmds = vec![Cmd::SetClipboard(sel)];
+                    cmds.extend(super::lsp::notify_change(model));
+                    return cmds;
                 }
             Vec::new()
         }
         Action::Paste => {
             let text = read_clipboard(model);
             if !text.is_empty() {
-                edit(model, |b| b.insert_str(&text));
+                return edit(model, |b| b.insert_str(&text));
             }
             Vec::new()
         }

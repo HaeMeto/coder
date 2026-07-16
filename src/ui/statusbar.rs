@@ -17,7 +17,18 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
     if let Some(branch) = &model.sidebar.git.branch {
         left.push_str(&format!(" ⎇ {branch} "));
     }
-    left.push_str(&format!(" {} ", model.status_message));
+    // A diagnostic under the cursor takes over the message area.
+    if let Some(diag) = model.diagnostic_at_cursor() {
+        let tag = match diag.severity {
+            crate::services::lsp::Severity::Error => "error",
+            crate::services::lsp::Severity::Warning => "warning",
+            crate::services::lsp::Severity::Info => "info",
+            crate::services::lsp::Severity::Hint => "hint",
+        };
+        left.push_str(&format!(" {tag}: {} ", diag.message.replace('\n', " ")));
+    } else {
+        left.push_str(&format!(" {} ", model.status_message));
+    }
 
     let mut right = String::new();
     if let Some(buf) = model.active_buffer() {
