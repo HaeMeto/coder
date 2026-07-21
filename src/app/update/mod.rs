@@ -407,6 +407,12 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             save_after,
         } => lsp::formatter_output(model, path, text, token, save_after),
         Msg::LinterDiagnostics { path, items } => lsp::linter_diagnostics(model, path, items),
+        Msg::ToolsChecked(statuses) => {
+            for (command, installed) in statuses {
+                model.tool_available.insert(command, installed);
+            }
+            Vec::new()
+        }
         Msg::Status(s) => {
             model.status_message = s;
             Vec::new()

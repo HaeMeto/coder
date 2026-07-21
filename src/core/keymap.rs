@@ -107,6 +107,13 @@ pub fn resolve(key: KeyEvent, focus: Focus) -> Option<Action> {
         }
     }
 
+    // F2 renames the selected file-tree row from any focus (the handler ignores
+    // it unless the Files panel is active). Lets rename work right after a file
+    // is opened by mouse click, which moves focus to the editor.
+    if key.code == KeyCode::F(2) {
+        return Some(Action::RenameEntry);
+    }
+
     match focus {
         Focus::Terminal => resolve_terminal(key, ctrl, shift),
         Focus::Editor => resolve_editor(key, ctrl, shift),
@@ -189,7 +196,7 @@ fn resolve_sidebar(key: KeyEvent, ctrl: bool, shift: bool) -> Option<Action> {
         };
     }
     match key.code {
-        KeyCode::F(2) => Some(Action::RenameEntry),
+        // F2 (rename) is a global shortcut handled in `resolve`.
         KeyCode::Delete => Some(Action::DeleteEntry),
         KeyCode::Up => Some(Action::NavUp),
         KeyCode::Down => Some(Action::NavDown),

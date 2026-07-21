@@ -7,7 +7,6 @@ mod extensions;
 mod files;
 mod git;
 mod search;
-mod settings;
 mod themes;
 
 use ratatui::Frame;
@@ -21,7 +20,6 @@ use crate::app::model::{Model, Panel};
 pub use files::{FileHit, file_hit, file_row_at, files_header_hit};
 pub use git::{GitHit, git_hit};
 pub use search::{SearchHit, search_hit};
-pub use settings::settings_row_at;
 pub use themes::theme_row_at;
 
 /// Insets a rect by 1 cell on every side (the sidebar's inner padding). Render
@@ -93,6 +91,7 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
         Panel::Git => git::render(frame, body, model),
         Panel::Extensions => extensions::render(frame, body, model),
         Panel::Themes => themes::render(frame, body, model),
-        Panel::Settings => settings::render(frame, body, model),
+        // Settings has no sidebar body: the gear button opens config.toml as a tab.
+        Panel::Settings => {}
     }
 }

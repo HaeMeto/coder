@@ -391,16 +391,8 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
             }
             Vec::new()
         }
-        Panel::Settings => {
-            if let Some(i) = ui::sidebar::settings_row_at(a.sidebar, y) {
-                model.sidebar.settings.selected = i;
-                model.focus = Focus::Sidebar;
-                model.sidebar.settings.toggle(i);
-                return persist_config(model);
-            }
-            Vec::new()
-        }
-        Panel::Extensions => Vec::new(),
+        // Settings has no clickable rows (opens config.toml as a tab instead).
+        Panel::Settings | Panel::Extensions => Vec::new(),
     }
 }
 

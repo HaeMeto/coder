@@ -126,6 +126,9 @@ pub enum Msg {
         path: PathBuf,
         items: Vec<(usize, usize, String)>,
     },
+    /// PATH-availability of tool binaries: `(command, is_installed)` pairs, for
+    /// the Extensions panel's per-language status.
+    ToolsChecked(Vec<(String, bool)>),
 
     // Terminal
     PtyReady(PtySession),

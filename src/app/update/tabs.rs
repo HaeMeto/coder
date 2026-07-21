@@ -3,6 +3,11 @@
 use super::*;
 
 pub(super) fn select_panel(model: &mut Model, p: Panel) -> Vec<Cmd> {
+    // The gear "panel" is an action, not a sidebar view: it opens config.toml in
+    // the editor so settings + languages can be hand-edited.
+    if p == Panel::Settings {
+        return open_config(model);
+    }
     // Clicking the already-active panel toggles the sidebar shut; clicking a
     // different panel (or the same one while collapsed) opens it on that panel.
     if model.layout.sidebar_open && model.sidebar.active == p {
@@ -25,6 +30,9 @@ pub(super) fn select_panel(model: &mut Model, p: Panel) -> Vec<Cmd> {
         Panel::Files if model.sidebar.files.children.is_none() => {
             vec![Cmd::ScanDir(model.root.clone())]
         }
+        // Re-probe tool availability each time the panel opens (a binary may have
+        // been installed since startup).
+        Panel::Extensions => vec![Cmd::CheckTools(model.extensions.tool_commands())],
         _ => Vec::new(),
     }
 }
@@ -111,6 +119,19 @@ pub(super) fn cycle_tab(model: &mut Model, delta: isize) {
 
 pub(super) fn open_path(model: &mut Model, path: PathBuf) -> Vec<Cmd> {
     open_path_at(model, path, 0)
+}
+
+/// Opens the user config file as an editor tab, creating it (with the current
+/// defaults) first if it doesn't exist yet so there is always something to edit.
+pub(super) fn open_config(model: &mut Model) -> Vec<Cmd> {
+    let Some(path) = crate::services::config::config_path() else {
+        model.status_message = "No config path available".to_string();
+        return Vec::new();
+    };
+    if !path.exists() {
+        crate::services::config::save(&model.config_snapshot());
+    }
+    open_path(model, path)
 }
 
 /// Compares an open buffer's path to a canonicalized disk path.

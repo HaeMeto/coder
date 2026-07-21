@@ -40,7 +40,7 @@ pub(super) fn search_replace_all(model: &mut Model) -> Vec<Cmd> {
     }]
 }
 
-/// Search panel "Replace": replaces only within the selected result's file.
+/// Search panel "Replace": replaces only on the selected result's line.
 pub(super) fn search_replace_one(model: &mut Model) -> Vec<Cmd> {
     let s = &model.sidebar.search;
     if s.query.is_empty() {
@@ -49,16 +49,17 @@ pub(super) fn search_replace_one(model: &mut Model) -> Vec<Cmd> {
     let Some(m) = s.results.get(s.selected) else {
         return Vec::new();
     };
-    let path = m.path.clone();
+    let (path, line_no) = (m.path.clone(), m.line_no);
     let (query, replace, use_regex, match_case) = (
         s.query.content().to_string(),
         s.replace.content().to_string(),
         s.use_regex,
         s.match_case,
     );
-    model.status_message = "Replacing in file…".to_string();
-    vec![Cmd::RunReplaceFile {
+    model.status_message = "Replacing…".to_string();
+    vec![Cmd::RunReplaceLine {
         path,
+        line_no,
         query,
         replace,
         use_regex,

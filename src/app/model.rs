@@ -69,10 +69,8 @@ impl Panel {
     }
 }
 
-/// Editor preferences shown in the Settings panel. Boolean toggles applied at save time.
+/// Editor preferences applied at save time. Edited via `config.toml`, not the UI.
 pub struct SettingsState {
-    /// Keyboard/mouse selection index into the settings list.
-    pub selected: usize,
     /// Master switch: run the enabled format actions when saving.
     pub format_on_save: bool,
     /// Strip trailing spaces/tabs from each line on save (when format_on_save).
@@ -81,42 +79,9 @@ pub struct SettingsState {
     pub insert_final_newline: bool,
 }
 
-impl SettingsState {
-    /// Number of toggleable settings.
-    pub const COUNT: usize = 3;
-
-    pub fn label(idx: usize) -> &'static str {
-        match idx {
-            0 => "Format on save",
-            1 => "Trim trailing whitespace",
-            2 => "Insert final newline",
-            _ => "",
-        }
-    }
-
-    pub fn value(&self, idx: usize) -> bool {
-        match idx {
-            0 => self.format_on_save,
-            1 => self.trim_trailing_whitespace,
-            2 => self.insert_final_newline,
-            _ => false,
-        }
-    }
-
-    pub fn toggle(&mut self, idx: usize) {
-        match idx {
-            0 => self.format_on_save = !self.format_on_save,
-            1 => self.trim_trailing_whitespace = !self.trim_trailing_whitespace,
-            2 => self.insert_final_newline = !self.insert_final_newline,
-            _ => {}
-        }
-    }
-}
-
 impl Default for SettingsState {
     fn default() -> Self {
         SettingsState {
-            selected: 0,
             format_on_save: false,
             trim_trailing_whitespace: true,
             insert_final_newline: true,
@@ -368,8 +333,8 @@ pub struct Dialog {
     pub kind: DialogKind,
     pub title: String,
     pub message: String,
-    /// Text entered for the `Input` kind.
-    pub input: String,
+    /// Text entered for the `Input` kind (with caret, editable).
+    pub input: TextInputState,
     /// Button selection: 0 = confirm, 1 = cancel (Ask/Input).
     pub selected: usize,
     pub action: DialogAction,
@@ -381,7 +346,7 @@ impl Dialog {
             kind: DialogKind::Ask,
             title,
             message,
-            input: String::new(),
+            input: TextInputState::default(),
             selected: 0,
             action,
         }
@@ -394,18 +359,20 @@ impl Dialog {
             kind: DialogKind::Info,
             title,
             message,
-            input: String::new(),
+            input: TextInputState::default(),
             selected: 0,
             action: DialogAction::None,
         }
     }
 
     pub fn input(title: String, message: String, initial: String, action: DialogAction) -> Self {
+        let mut input = TextInputState::default();
+        input.set_content(initial);
         Dialog {
             kind: DialogKind::Input,
             title,
             message,
-            input: initial,
+            input,
             selected: 0,
             action,
         }
@@ -674,6 +641,10 @@ pub struct Model {
     pub lsp: LspState,
     /// Diagnostics per file (buffer char coordinates).
     pub diagnostics: std::collections::HashMap<PathBuf, Vec<Diagnostic>>,
+    /// Whether each tool binary (lsp / formatter / linter command) is installed
+    /// on PATH, keyed by command name. Filled by `Cmd::CheckTools`; a missing
+    /// key means "not probed yet".
+    pub tool_available: std::collections::HashMap<String, bool>,
     /// The open completion popup, if any.
     pub completion: Option<CompletionState>,
     /// An in-flight format request awaiting edits.
@@ -751,9 +722,10 @@ impl Model {
             active_deleted: Vec::new(),
             find: FindState::default(),
             last_click: None,
-            extensions: crate::services::extensions::load_all(),
+            extensions: crate::services::extensions::ExtensionRegistry::default(),
             lsp: LspState::default(),
             diagnostics: std::collections::HashMap::new(),
+            tool_available: std::collections::HashMap::new(),
             completion: None,
             pending_format: None,
             toast: None,
@@ -930,6 +902,8 @@ impl Model {
         s.format_on_save = config.format_on_save;
         s.trim_trailing_whitespace = config.trim_trailing_whitespace;
         s.insert_final_newline = config.insert_final_newline;
+        self.extensions =
+            crate::services::extensions::ExtensionRegistry::from_config(&config.languages);
     }
 
     /// Snapshot of the current preferences, for persisting to disk.
@@ -940,6 +914,7 @@ impl Model {
             format_on_save: s.format_on_save,
             trim_trailing_whitespace: s.trim_trailing_whitespace,
             insert_final_newline: s.insert_final_newline,
+            languages: self.extensions.to_language_configs(),
         }
     }
 

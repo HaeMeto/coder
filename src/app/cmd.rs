@@ -103,11 +103,27 @@ pub enum Cmd {
         text: String,
     },
     SetClipboard(String),
+    /// Probe whether each named binary is installed on PATH (result ->
+    /// `Msg::ToolsChecked`), for the Extensions panel status.
+    CheckTools(Vec<String>),
     /// Persist user preferences (theme + settings) to the config file.
     SaveConfig(services::config::Config),
     /// Wake the app after the toast duration so an expired toast is cleared even
     /// without other events arriving.
     ScheduleToastExpiry,
+}
+
+/// Whether a command names an executable that exists: a path with a separator is
+/// checked directly, otherwise each `PATH` entry is probed for the file.
+fn binary_on_path(command: &str) -> bool {
+    if command.contains('/') {
+        return std::path::Path::new(command).is_file();
+    }
+    let Ok(path) = std::env::var("PATH") else {
+        return false;
+    };
+    path.split(':')
+        .any(|dir| std::path::Path::new(dir).join(command).is_file())
 }
 
 /// Runs a stdin->stdout tool: feeds `input` on stdin, returns its output.
@@ -573,6 +589,18 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
         Cmd::SetClipboard(text) => {
             tokio::task::spawn_blocking(move || {
                 services::clipboard::set_text(text);
+            });
+        }
+        Cmd::CheckTools(commands) => {
+            tokio::task::spawn_blocking(move || {
+                let statuses = commands
+                    .into_iter()
+                    .map(|c| {
+                        let installed = binary_on_path(&c);
+                        (c, installed)
+                    })
+                    .collect();
+                let _ = tx.send(Msg::ToolsChecked(statuses));
             });
         }
         Cmd::SaveConfig(config) => {

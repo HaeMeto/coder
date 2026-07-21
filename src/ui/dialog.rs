@@ -133,12 +133,12 @@ pub fn render(frame: &mut Frame, model: &Model) {
     frame.render_widget(msg, l.message);
 
     if let Some(irect) = l.input {
-        let field = Paragraph::new(Line::from(vec![
-            Span::raw(format!(" {}", d.input)),
-            Span::styled("█", Style::new().fg(th.accent)),
-        ]))
-        .style(Style::new().fg(th.fg).bg(th.bg));
-        frame.render_widget(field, irect);
+        frame.render_widget(
+            crate::ui::text_input::TextInput::new(&d.input, th)
+                .focused(true)
+                .pad(1),
+            irect,
+        );
     }
 
     let (c_label, x_label) = button_labels(d.kind);

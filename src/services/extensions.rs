@@ -1,31 +1,30 @@
-//! Language extensions: declarative TOML manifests that map a language to an
-//! LSP server plus optional standalone formatter/linter commands.
+//! Language tooling: maps a language to an LSP server plus optional standalone
+//! formatter/linter commands.
 //!
-//! Each extension lives at `~/.config/coder/extensions/<name>/extension.toml`
-//! (or `$CODER_EXTENSIONS/<name>/extension.toml`). The user installs the actual
-//! binaries (rust-analyzer, pyright, black, ruff); the editor only orchestrates
-//! them. A few built-in defaults ship so the feature works with zero config.
+//! The definitions come from the main config file (`config.toml`), one
+//! `[<name>]` section per language. The user installs the actual binaries
+//! (rust-analyzer, pyright, black, ruff); the editor only orchestrates them.
+//! See `crate::services::config` for the on-disk format and built-in defaults.
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 
-use serde::Deserialize;
+use crate::services::config::LanguageConfig;
 
-/// One installed extension: a name and the languages it supports.
-#[derive(Debug, Clone, Deserialize)]
+/// One language group: a name and the languages it supports (currently always a
+/// single language, mirroring a `[<name>]` config section).
+#[derive(Debug, Clone)]
 pub struct ExtensionManifest {
     pub name: String,
-    #[serde(default)]
     pub languages: Vec<LanguageDef>,
 }
 
-/// A single language's capabilities within an extension.
-#[derive(Debug, Clone, Deserialize)]
+/// A single language's capabilities.
+#[derive(Debug, Clone)]
 pub struct LanguageDef {
     /// LSP language identifier (e.g. "rust", "python").
     pub id: String,
     /// File extensions (without the dot) this language claims.
-    #[serde(default)]
     pub extensions: Vec<String>,
     /// Language server to launch (stdio JSON-RPC).
     pub lsp: Option<ServerSpec>,
@@ -36,22 +35,29 @@ pub struct LanguageDef {
 }
 
 /// A language-server command.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ServerSpec {
     pub command: String,
-    #[serde(default)]
     pub args: Vec<String>,
     /// Extra environment variables passed to the server process.
-    #[serde(default)]
     pub env: Vec<(String, String)>,
 }
 
 /// A standalone command-line tool that reads stdin and writes stdout.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ToolSpec {
     pub command: String,
-    #[serde(default)]
     pub args: Vec<String>,
+}
+
+/// Splits a shell-style command string into (binary, args). Returns `None` for
+/// an empty / whitespace-only string ("not configured"). Quoting is not handled
+/// (whitespace-split only), which is enough for the tools we invoke.
+fn parse_command(spec: &str) -> Option<(String, Vec<String>)> {
+    let mut parts = spec.split_whitespace();
+    let command = parts.next()?.to_string();
+    let args = parts.map(str::to_string).collect();
+    Some((command, args))
 }
 
 /// All loaded extensions plus a fast extension -> language lookup.
@@ -68,6 +74,98 @@ impl ExtensionRegistry {
         &self.manifests
     }
 
+    /// Builds a registry from config language sections. Each `[<name>]` becomes
+    /// a one-language manifest; the command strings are split into binary+args.
+    pub fn from_config(languages: &BTreeMap<String, LanguageConfig>) -> Self {
+        let manifests = languages
+            .iter()
+            .map(|(name, lc)| {
+                let lsp = parse_command(&lc.lsp).map(|(command, args)| ServerSpec {
+                    command,
+                    args,
+                    env: Vec::new(),
+                });
+                let formatter =
+                    parse_command(&lc.formatter).map(|(command, args)| ToolSpec { command, args });
+                let linter =
+                    parse_command(&lc.linter).map(|(command, args)| ToolSpec { command, args });
+                ExtensionManifest {
+                    name: name.clone(),
+                    languages: vec![LanguageDef {
+                        id: name.clone(),
+                        extensions: lc.extensions.clone(),
+                        lsp,
+                        formatter,
+                        linter,
+                    }],
+                }
+            })
+            .collect();
+        let mut registry = ExtensionRegistry {
+            manifests,
+            by_ext: HashMap::new(),
+        };
+        registry.reindex();
+        registry
+    }
+
+    /// Reconstructs the config language sections from the loaded registry, so a
+    /// settings save (e.g. a theme change) re-persists the languages unchanged.
+    pub fn to_language_configs(&self) -> BTreeMap<String, LanguageConfig> {
+        let join = |command: &str, args: &[String]| {
+            if args.is_empty() {
+                command.to_string()
+            } else {
+                format!("{command} {}", args.join(" "))
+            }
+        };
+        let mut map = BTreeMap::new();
+        for manifest in &self.manifests {
+            for lang in &manifest.languages {
+                map.insert(
+                    manifest.name.clone(),
+                    LanguageConfig {
+                        extensions: lang.extensions.clone(),
+                        lsp: lang.lsp.as_ref().map(|s| join(&s.command, &s.args)).unwrap_or_default(),
+                        formatter: lang
+                            .formatter
+                            .as_ref()
+                            .map(|t| join(&t.command, &t.args))
+                            .unwrap_or_default(),
+                        linter: lang
+                            .linter
+                            .as_ref()
+                            .map(|t| join(&t.command, &t.args))
+                            .unwrap_or_default(),
+                    },
+                );
+            }
+        }
+        map
+    }
+
+    /// Every distinct binary referenced by the configured languages (lsp +
+    /// formatter + linter commands), sorted and de-duplicated. Used to probe
+    /// which tools are actually installed on PATH.
+    pub fn tool_commands(&self) -> Vec<String> {
+        let mut cmds: Vec<String> = self
+            .manifests
+            .iter()
+            .flat_map(|m| &m.languages)
+            .flat_map(|l| {
+                [
+                    l.lsp.as_ref().map(|s| s.command.clone()),
+                    l.formatter.as_ref().map(|t| t.command.clone()),
+                    l.linter.as_ref().map(|t| t.command.clone()),
+                ]
+            })
+            .flatten()
+            .collect();
+        cmds.sort();
+        cmds.dedup();
+        cmds
+    }
+
     /// Resolves the language for a file by its extension.
     pub fn language_for_path(&self, path: &Path) -> Option<&LanguageDef> {
         let ext = path.extension().and_then(|e| e.to_str())?;
@@ -76,8 +174,7 @@ impl ExtensionRegistry {
     }
 
     /// Builds the extension -> language index from the current manifests. A later
-    /// manifest (user config) wins over an earlier one (built-in) for the same
-    /// extension, since user extensions are appended after the built-ins.
+    /// manifest wins over an earlier one for the same extension.
     fn reindex(&mut self) {
         self.by_ext.clear();
         for (m, manifest) in self.manifests.iter().enumerate() {
@@ -90,102 +187,14 @@ impl ExtensionRegistry {
     }
 }
 
-/// Directory holding user extensions: `$CODER_EXTENSIONS` override, else
-/// `~/.config/coder/extensions`.
-fn extensions_dir() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("CODER_EXTENSIONS") {
-        return Some(PathBuf::from(p));
-    }
-    let home = std::env::var("HOME").ok()?;
-    Some(PathBuf::from(home).join(".config/coder/extensions"))
-}
-
-/// Parses a single `extension.toml`, returning `None` (never panicking) on any
-/// read or parse error so one bad extension can't take down the editor.
-fn load_manifest(path: &Path) -> Option<ExtensionManifest> {
-    let text = std::fs::read_to_string(path).ok()?;
-    toml::from_str(&text).ok()
-}
-
-/// Loads every extension: built-in defaults first, then user manifests (which
-/// override built-ins for a shared extension via `reindex`'s last-wins rule).
-pub fn load_all() -> ExtensionRegistry {
-    let mut manifests = builtins();
-    if let Some(dir) = extensions_dir()
-        && let Ok(entries) = std::fs::read_dir(&dir)
-    {
-        let mut dirs: Vec<PathBuf> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.is_dir())
-            .collect();
-        dirs.sort();
-        for d in dirs {
-            if let Some(m) = load_manifest(&d.join("extension.toml")) {
-                manifests.push(m);
-            }
-        }
-    }
-    let mut registry = ExtensionRegistry {
-        manifests,
-        by_ext: HashMap::new(),
-    };
-    registry.reindex();
-    registry
-}
-
-/// Built-in language defaults so common languages work with zero user config.
-/// The user still needs the actual binaries on PATH.
-fn builtins() -> Vec<ExtensionManifest> {
-    vec![
-        ExtensionManifest {
-            name: "rust".to_string(),
-            languages: vec![LanguageDef {
-                id: "rust".to_string(),
-                extensions: vec!["rs".to_string()],
-                lsp: Some(ServerSpec {
-                    command: "rust-analyzer".to_string(),
-                    args: vec![],
-                    env: vec![],
-                }),
-                formatter: Some(ToolSpec {
-                    command: "rustfmt".to_string(),
-                    args: vec!["--edition".to_string(), "2021".to_string()],
-                }),
-                linter: None,
-            }],
-        },
-        ExtensionManifest {
-            name: "python".to_string(),
-            languages: vec![LanguageDef {
-                id: "python".to_string(),
-                extensions: vec!["py".to_string(), "pyi".to_string()],
-                lsp: Some(ServerSpec {
-                    command: "pyright-langserver".to_string(),
-                    args: vec!["--stdio".to_string()],
-                    env: vec![],
-                }),
-                formatter: Some(ToolSpec {
-                    command: "black".to_string(),
-                    args: vec!["-".to_string(), "-q".to_string()],
-                }),
-                linter: None,
-            }],
-        },
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::config;
 
     #[test]
-    fn builtins_resolve_by_extension() {
-        let mut reg = ExtensionRegistry {
-            manifests: builtins(),
-            by_ext: HashMap::new(),
-        };
-        reg.reindex();
+    fn config_defaults_resolve_by_extension() {
+        let reg = ExtensionRegistry::from_config(&config::seed().languages);
         assert_eq!(
             reg.language_for_path(Path::new("main.rs")).map(|l| &l.id[..]),
             Some("rust")
@@ -205,52 +214,30 @@ mod tests {
     }
 
     #[test]
-    fn manifest_parses_from_toml() {
-        let src = r#"
-            name = "go"
-            [[languages]]
-            id = "go"
-            extensions = ["go"]
-            [languages.lsp]
-            command = "gopls"
-            [languages.formatter]
-            command = "gofmt"
-        "#;
-        let m: ExtensionManifest = toml::from_str(src).unwrap();
-        assert_eq!(m.name, "go");
-        assert_eq!(m.languages[0].extensions, ["go"]);
-        assert_eq!(m.languages[0].lsp.as_ref().unwrap().command, "gopls");
-        assert!(m.languages[0].linter.is_none());
+    fn command_string_splits_into_binary_and_args() {
+        let cfg = config::parse(
+            r#"
+            [rust]
+            extensions = ["rs"]
+            formatter = "rustfmt --edition 2021"
+        "#,
+        );
+        let reg = ExtensionRegistry::from_config(&cfg.languages);
+        let lang = reg.language_for_path(Path::new("x.rs")).unwrap();
+        let fmt = lang.formatter.as_ref().unwrap();
+        assert_eq!(fmt.command, "rustfmt");
+        assert_eq!(fmt.args, ["--edition", "2021"]);
+        // Empty command string => not configured.
+        assert!(lang.lsp.is_none());
     }
 
     #[test]
-    fn user_manifest_overrides_builtin_extension() {
-        let mut manifests = builtins();
-        manifests.push(ExtensionManifest {
-            name: "custom-rust".to_string(),
-            languages: vec![LanguageDef {
-                id: "rust".to_string(),
-                extensions: vec!["rs".to_string()],
-                lsp: Some(ServerSpec {
-                    command: "my-analyzer".to_string(),
-                    args: vec![],
-                    env: vec![],
-                }),
-                formatter: None,
-                linter: None,
-            }],
-        });
-        let mut reg = ExtensionRegistry {
-            manifests,
-            by_ext: HashMap::new(),
-        };
-        reg.reindex();
-        // Last (user) manifest wins for the .rs extension.
-        assert_eq!(
-            reg.language_for_path(Path::new("x.rs"))
-                .and_then(|l| l.lsp.as_ref())
-                .map(|s| &s.command[..]),
-            Some("my-analyzer")
-        );
+    fn to_language_configs_round_trips_commands() {
+        let reg = ExtensionRegistry::from_config(&config::seed().languages);
+        let langs = reg.to_language_configs();
+        assert_eq!(langs["rust"].lsp, "rust-analyzer");
+        assert_eq!(langs["rust"].formatter, "rustfmt --edition 2021");
+        assert_eq!(langs["python"].lsp, "ruff server");
+        assert_eq!(langs["python"].formatter, "ruff format -");
     }
 }

@@ -119,8 +119,13 @@ async fn run(
     // large tree (e.g. $HOME from the app menu) never blocks startup.
     let mut watcher = create_watcher(tx.clone());
 
-    // Initial side effects: scan the root directory + load git status.
-    let mut cmds = vec![Cmd::ScanDir(root.clone()), Cmd::LoadGitStatus];
+    // Initial side effects: scan the root directory + load git status + probe
+    // which configured language tools are installed.
+    let mut cmds = vec![
+        Cmd::ScanDir(root.clone()),
+        Cmd::LoadGitStatus,
+        Cmd::CheckTools(model.extensions.tool_commands()),
+    ];
     // Opened with a file: keep the sidebar collapsed (the user opens it when needed)
     // and load the file straight into the editor.
     if let Some(file) = open_file {

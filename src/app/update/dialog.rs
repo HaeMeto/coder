@@ -28,19 +28,18 @@ pub(super) fn dialog_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
             }
             _ => Vec::new(),
         },
-        DialogKind::Input => match key.code {
-            KeyCode::Char(c) => {
-                d.input.push(c);
-                Vec::new()
+        DialogKind::Input => {
+            // The input widget consumes typing and caret motion; only the keys it
+            // ignores (Enter/Esc) drive the dialog.
+            match d.input.handle_key(key, false) {
+                InputOutcome::Ignored => match key.code {
+                    KeyCode::Enter => dialog_confirm(model),
+                    KeyCode::Esc => dialog_cancel(model),
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
             }
-            KeyCode::Backspace => {
-                d.input.pop();
-                Vec::new()
-            }
-            KeyCode::Enter => dialog_confirm(model),
-            KeyCode::Esc => dialog_cancel(model),
-            _ => Vec::new(),
-        },
+        }
     }
 }
 
@@ -66,9 +65,9 @@ fn dialog_confirm(model: &mut Model) -> Vec<Cmd> {
     };
     match d.action {
         DialogAction::GitRevert(rel) => vec![Cmd::GitRevert(rel)],
-        DialogAction::NewFile(dir) => create_in(model, dir, &d.input, false),
-        DialogAction::NewFolder(dir) => create_in(model, dir, &d.input, true),
-        DialogAction::Rename(path) => rename_to(model, path, &d.input),
+        DialogAction::NewFile(dir) => create_in(model, dir, d.input.content(), false),
+        DialogAction::NewFolder(dir) => create_in(model, dir, d.input.content(), true),
+        DialogAction::Rename(path) => rename_to(model, path, d.input.content()),
         DialogAction::Delete(path) => vec![Cmd::DeletePath(path)],
         DialogAction::CloseTab(i, _path) => {
             model.dialog = None;

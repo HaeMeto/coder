@@ -71,6 +71,17 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
                 }
             }
             let contents = model.active_buffer().map(|b| b.full_text()).unwrap_or_default();
+            // Saving the config file re-applies it live (theme, settings, language
+            // tooling) so hand-edits take effect without a restart, and re-probes
+            // the (possibly changed) tool binaries.
+            if crate::services::config::config_path().as_deref() == Some(path.as_path()) {
+                let cfg = crate::services::config::parse(&contents);
+                model.apply_config(&cfg);
+                return vec![
+                    Cmd::WriteFile { path, contents },
+                    Cmd::CheckTools(model.extensions.tool_commands()),
+                ];
+            }
             vec![Cmd::WriteFile { path, contents }]
         }
         Action::CloseTab => close_active_tab(model),
