@@ -27,7 +27,7 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
         .fg(model.theme.statusbar_fg)
         .bg(model.theme.statusbar_bg);
 
-    let mut left = String::new();
+    let mut left = format!(" Coder v{} ", env!("CARGO_PKG_VERSION"));
     if let Some(branch) = &model.sidebar.git.branch {
         left.push_str(&format!(" ⎇ {branch} "));
     }
