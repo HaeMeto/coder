@@ -10,6 +10,7 @@ pub mod sidebar;
 pub mod statusbar;
 pub mod tabs;
 pub mod terminal;
+pub mod toast;
 pub mod text_input;
 
 use ratatui::Frame;
@@ -151,4 +152,7 @@ pub fn view(frame: &mut Frame, model: &Model) {
     if model.dialog.is_some() {
         dialog::render(frame, model);
     }
+
+    // Toast floats bottom-center over everything.
+    toast::render(frame, area, model);
 }

@@ -4,6 +4,10 @@ use super::*;
 
 /// Applies an editor mutation and keeps the cursor visible.
 pub(super) fn edit(model: &mut Model, f: impl FnOnce(&mut Buffer)) -> Vec<Cmd> {
+    // Read-only notice tabs (binary / unreadable files) never accept edits.
+    if model.active_notice().is_some() {
+        return Vec::new();
+    }
     let before = model.active_buffer().map(|b| b.version);
     if let Some(buf) = model.active_buffer_mut() {
         f(buf);
@@ -67,11 +71,10 @@ pub(super) fn apply_motion(b: &mut Buffer, motion: Motion, extend: bool, page: u
 }
 
 pub(super) fn read_clipboard(model: &Model) -> String {
-    if let Ok(mut cb) = arboard::Clipboard::new()
-        && let Ok(text) = cb.get_text()
-            && !text.is_empty() {
-                return text;
-            }
+    let text = crate::services::clipboard::get_text();
+    if !text.is_empty() {
+        return text;
+    }
     model.internal_clipboard.clone()
 }
 

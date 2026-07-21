@@ -32,6 +32,8 @@ pub enum Cmd {
     GitUnstageAll,
     GitRevert(String),
     GitCommit(String),
+    /// Soft-reset HEAD~1: undo the last commit, keep its changes staged.
+    GitUndoLastCommit,
     GitFetch,
     GitPull,
     GitPush,
@@ -87,6 +89,9 @@ pub enum Cmd {
     SetClipboard(String),
     /// Persist user preferences (theme + settings) to the config file.
     SaveConfig(services::config::Config),
+    /// Wake the app after the toast duration so an expired toast is cleared even
+    /// without other events arriving.
+    ScheduleToastExpiry,
 }
 
 /// Runs a stdin->stdout tool: feeds `input` on stdin, returns its output.
@@ -259,12 +264,24 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
         }
         Cmd::ReadFile(path) => {
             tokio::spawn(async move {
-                match services::fs::read_file(&path).await {
-                    Ok(text) => {
-                        let _ = tx.send(Msg::FileLoaded { path, text });
-                    }
+                match tokio::fs::read(&path).await {
+                    Ok(bytes) => match String::from_utf8(bytes) {
+                        Ok(text) => {
+                            let _ = tx.send(Msg::FileLoaded { path, text });
+                        }
+                        // Invalid UTF-8 -> a binary file we cannot display as text.
+                        Err(_) => {
+                            let _ = tx.send(Msg::FileLoadFailed {
+                                path,
+                                error: "This file cannot be displayed because it is a binary file or uses an unsupported encoding.".to_string(),
+                            });
+                        }
+                    },
                     Err(e) => {
-                        let _ = tx.send(Msg::Error(format!("could not open file: {e}")));
+                        let _ = tx.send(Msg::FileLoadFailed {
+                            path,
+                            error: format!("Could not open file: {e}"),
+                        });
                     }
                 }
             });
@@ -347,6 +364,20 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
                     }
                     Err(e) => {
                         let _ = tx.send(Msg::Error(format!("commit failed: {e}")));
+                    }
+                }
+                send_git_status(&root, &tx);
+            });
+        }
+        Cmd::GitUndoLastCommit => {
+            tokio::task::spawn_blocking(move || {
+                match services::git::undo_last_commit(&root) {
+                    Ok(message) => {
+                        let _ = tx.send(Msg::GitCommitUndone { message });
+                        let _ = tx.send(Msg::Status("Undid last commit".to_string()));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Msg::Error(format!("undo commit failed: {e}")));
                     }
                 }
                 send_git_status(&root, &tx);
@@ -512,14 +543,18 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
         }
         Cmd::SetClipboard(text) => {
             tokio::task::spawn_blocking(move || {
-                if let Ok(mut cb) = arboard::Clipboard::new() {
-                    let _ = cb.set_text(text);
-                }
+                services::clipboard::set_text(text);
             });
         }
         Cmd::SaveConfig(config) => {
             tokio::task::spawn_blocking(move || {
                 services::config::save(&config);
+            });
+        }
+        Cmd::ScheduleToastExpiry => {
+            tokio::spawn(async move {
+                tokio::time::sleep(crate::app::model::TOAST_DURATION).await;
+                let _ = tx.send(Msg::ToastExpired);
             });
         }
     }

@@ -138,6 +138,18 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             cmds.extend(lsp::open_tab(model, tab));
             cmds
         }
+        Msg::FileLoadFailed { path, error } => {
+            // Reuse an already-open tab for this file, else open a read-only notice tab.
+            if let Some(i) = model.tab_index_for(&path) {
+                model.tabs[i].notice = Some(error);
+                model.active_tab = Some(i);
+            } else {
+                model.tabs.push(Tab::notice(path, error));
+                model.active_tab = Some(model.tabs.len() - 1);
+            }
+            model.focus = Focus::Editor;
+            Vec::new()
+        }
         Msg::HeadTextLoaded { path, text } => {
             // Update every open tab for this file (a normal tab and its diff tab).
             for i in model.all_tabs_for(&path) {
@@ -291,6 +303,12 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             );
             cmds
         }
+        Msg::GitCommitUndone { message } => {
+            let g = &mut model.sidebar.git;
+            g.commit.set_content(message); // moves caret to end
+            model.focus = Focus::GitCommit;
+            Vec::new()
+        }
         Msg::SearchResults { query, matches } => {
             if query == model.sidebar.search.query.content() {
                 model.sidebar.search.results = matches;
@@ -336,6 +354,9 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         }
         Msg::PtyOutput(bytes) => {
             model.terminal.parser.process(&bytes);
+            // Refresh scrollback bounds and re-anchor the view after vt100 has
+            // appended any new rows.
+            model.terminal.sync_scroll_bounds();
             Vec::new()
         }
         Msg::PtyExited => {
@@ -380,6 +401,14 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         }
         Msg::Error(e) => {
             model.status_message = format!("Error: {e}");
+            Vec::new()
+        }
+        Msg::ToastExpired => {
+            // Only clear if actually expired: a newer toast raised in the meantime
+            // has a later `shown_at` and must survive this stale timer.
+            if model.toast.as_ref().is_some_and(|t| t.is_expired()) {
+                model.toast = None;
+            }
             Vec::new()
         }
     }

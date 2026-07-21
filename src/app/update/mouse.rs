@@ -30,6 +30,18 @@ pub(super) fn handle_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
                 scrollbar_jump(model, &a, y);
                 return Vec::new();
             }
+            // Terminal scrollbar (rightmost inner column of the terminal).
+            if a.terminal_open
+                && model.terminal.session.is_some()
+                && rect_contains(a.terminal, x, y)
+                && y > a.terminal.y
+                && x == a.terminal.x + a.terminal.width - 1
+            {
+                model.focus = Focus::Terminal;
+                model.drag = Some(DragTarget::TerminalScrollbar);
+                terminal_scrollbar_jump(model, &a, y);
+                return Vec::new();
+            }
             mouse_click(model, &a, x, y)
         }
         MouseEventKind::Drag(MouseButton::Left) => {
@@ -56,12 +68,32 @@ pub(super) fn handle_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
                     ensure_cursor_visible(model);
                 }
                 Some(DragTarget::Scrollbar) => scrollbar_jump(model, &a, y),
+                Some(DragTarget::TerminalScrollbar) => terminal_scrollbar_jump(model, &a, y),
+                Some(DragTarget::TerminalSelect) => {
+                    if let Some((sr, sc, _, _)) = model.terminal.selection {
+                        let (r, c) = terminal_cell(model, &a, x, y);
+                        model.terminal.selection = Some((sr, sc, r, c));
+                    }
+                }
                 None => {}
             }
             Vec::new()
         }
         MouseEventKind::Up(MouseButton::Left) => {
+            let was_terminal_select = model.drag == Some(DragTarget::TerminalSelect);
             model.drag = None;
+            // Selecting terminal text copies it to the clipboard immediately.
+            // A plain click leaves a zero-span selection (start == end); only a
+            // real drag across cells should copy.
+            let dragged = matches!(model.terminal.selection, Some((r1, c1, r2, c2)) if (r1, c1) != (r2, c2));
+            if was_terminal_select && dragged {
+                let text = model.terminal.selected_text();
+                if !text.is_empty() {
+                    model.internal_clipboard = text.clone();
+                    let toast = model.show_toast("Copied to clipboard");
+                    return vec![Cmd::SetClipboard(text), toast];
+                }
+            }
             Vec::new()
         }
         // Middle-click anywhere on a tab closes it (like clicking its ✕).
@@ -153,6 +185,11 @@ fn mouse_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
     }
     if a.terminal_open && rect_contains(a.terminal, x, y) {
         model.focus = Focus::Terminal;
+        if model.terminal.session.is_some() && y > a.terminal.y {
+            model.drag = Some(DragTarget::TerminalSelect);
+            let (r, c) = terminal_cell(model, a, x, y);
+            model.terminal.selection = Some((r, c, r, c));
+        }
         return Vec::new();
     }
     if rect_contains(a.editor, x, y) {
@@ -249,7 +286,27 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
                     model.sidebar.git.commit.cursor_to_end();
                     Vec::new()
                 }
+                Some(GitHit::Refresh) => {
+                    model.focus = Focus::Sidebar;
+                    model.status_message = "Refreshing…".to_string();
+                    vec![Cmd::LoadGitStatus]
+                }
+                // The file icon opens the plain file, not the diff view.
+                Some(GitHit::OpenFile(rel)) => {
+                    model.focus = Focus::Sidebar;
+                    open_path(model, model.root.join(rel))
+                }
                 Some(GitHit::CommitButton) => git_commit(model),
+                Some(GitHit::UndoLastCommit) => {
+                    model.focus = Focus::Sidebar;
+                    // Disabled unless there is an unpushed commit to undo.
+                    if model.sidebar.git.can_undo_commit() {
+                        model.status_message = "Undoing last commit…".to_string();
+                        vec![Cmd::GitUndoLastCommit]
+                    } else {
+                        Vec::new()
+                    }
+                }
                 Some(GitHit::Fetch) => {
                     model.focus = Focus::Sidebar;
                     if model.sidebar.git.has_remote {
@@ -360,8 +417,40 @@ fn mouse_scroll(model: &mut Model, a: &ui::Areas, x: u16, y: u16, delta: isize) 
             let new = (buf.scroll_y as isize + delta).clamp(0, max as isize) as usize;
             buf.scroll_y = new;
         }
+    } else if a.terminal_open && rect_contains(a.terminal, x, y) {
+        // Wheel up (delta < 0) scrolls back into history (offset grows).
+        model.terminal.scroll_by(-delta);
     } else if a.sidebar_open && rect_contains(a.sidebar, x, y) {
         nav(model, delta.signum());
     }
     Vec::new()
+}
+
+/// Maps a screen (x, y) to a clamped visible-grid (row, col) inside the
+/// terminal. The terminal has a 1-row top border and a 1-column scrollbar on
+/// the right, so the text area is inset accordingly.
+fn terminal_cell(model: &Model, a: &ui::Areas, x: u16, y: u16) -> (u16, u16) {
+    let (rows, cols) = model.terminal.parser.screen().size();
+    let row = y
+        .saturating_sub(a.terminal.y + 1)
+        .min(rows.saturating_sub(1));
+    let col = x.saturating_sub(a.terminal.x).min(cols.saturating_sub(1));
+    (row, col)
+}
+
+/// Jumps the terminal scrollback so the clicked row of the scrollbar track maps
+/// to that position in the history.
+fn terminal_scrollbar_jump(model: &mut Model, a: &ui::Areas, y: u16) {
+    let h = a.terminal.height.saturating_sub(1) as usize; // inner height
+    if h == 0 {
+        return;
+    }
+    let rows = model.terminal.rows as usize;
+    let total = model.terminal.scrollback_lines + rows;
+    let track_row = y.saturating_sub(a.terminal.y + 1) as usize;
+    // Row in [0, total): top of the viewport we want.
+    let above = (track_row * total / h).min(model.terminal.scrollback_lines);
+    // offset = history rows below the viewport top.
+    let offset = model.terminal.scrollback_lines.saturating_sub(above);
+    model.terminal.scroll_to(offset);
 }

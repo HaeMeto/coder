@@ -52,6 +52,10 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         }
         Action::SelectPanel(p) => select_panel(model, p),
         Action::Save => {
+            // Read-only notice tabs (binary / unreadable) must never be written back.
+            if model.active_notice().is_some() {
+                return Vec::new();
+            }
             // Cheap whitespace formatting runs synchronously first.
             apply_format_on_save(model);
             let Some(path) = model.active_buffer().and_then(|b| b.path.clone()) else {
@@ -112,7 +116,8 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
             if let Some(buf) = model.active_buffer()
                 && let Some(sel) = buf.selected_text() {
                     model.internal_clipboard = sel.clone();
-                    return vec![Cmd::SetClipboard(sel)];
+                    let toast = model.show_toast("Copied to clipboard");
+                    return vec![Cmd::SetClipboard(sel), toast];
                 }
             Vec::new()
         }
@@ -124,6 +129,7 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
                     ensure_cursor_visible(model);
                     let mut cmds = vec![Cmd::SetClipboard(sel)];
                     cmds.extend(super::lsp::notify_change(model));
+                    cmds.push(model.show_toast("Cut to clipboard"));
                     return cmds;
                 }
             Vec::new()
@@ -221,6 +227,8 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         Action::PtyInput(bytes) => {
             if let Some(session) = model.terminal.session.as_mut() {
                 session.write(&bytes);
+                // Typing snaps the view back to the live bottom.
+                model.terminal.scroll_to(0);
             }
             Vec::new()
         }
@@ -237,6 +245,9 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
                 }
                 Focus::SearchInput => model.focus = Focus::Editor,
                 Focus::GitCommit => model.focus = Focus::Sidebar,
+                Focus::Terminal => {
+                    model.terminal.selection = None;
+                }
                 _ => {}
             }
             Vec::new()

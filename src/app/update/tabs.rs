@@ -3,6 +3,16 @@
 use super::*;
 
 pub(super) fn select_panel(model: &mut Model, p: Panel) -> Vec<Cmd> {
+    // Clicking the already-active panel toggles the sidebar shut; clicking a
+    // different panel (or the same one while collapsed) opens it on that panel.
+    if model.layout.sidebar_open && model.sidebar.active == p {
+        model.layout.sidebar_open = false;
+        if matches!(model.focus, Focus::Sidebar | Focus::SearchInput) {
+            model.focus = Focus::Editor;
+        }
+        return Vec::new();
+    }
+
     model.sidebar.active = p;
     model.layout.sidebar_open = true;
     model.focus = if p == Panel::Search {

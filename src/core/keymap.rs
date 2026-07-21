@@ -108,7 +108,7 @@ pub fn resolve(key: KeyEvent, focus: Focus) -> Option<Action> {
     }
 
     match focus {
-        Focus::Terminal => resolve_terminal(key, ctrl),
+        Focus::Terminal => resolve_terminal(key, ctrl, shift),
         Focus::Editor => resolve_editor(key, ctrl, shift),
         Focus::Sidebar => resolve_sidebar(key, ctrl, shift),
         Focus::SearchInput => resolve_search(key),
@@ -220,7 +220,7 @@ fn resolve_search(key: KeyEvent) -> Option<Action> {
 }
 
 /// When the terminal is focused, converts keys into raw bytes to send to the PTY.
-fn resolve_terminal(key: KeyEvent, ctrl: bool) -> Option<Action> {
+fn resolve_terminal(key: KeyEvent, ctrl: bool, _shift: bool) -> Option<Action> {
     let bytes: Vec<u8> = match key.code {
         KeyCode::Char(c) => {
             if ctrl {

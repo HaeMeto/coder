@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use crate::app::cmd::Cmd;
 use crate::core::buffer::{Buffer, Cursor};
 use crate::core::filetree::FileTree;
 use crate::core::highlight::{self, HlLine, Highlighter};
@@ -195,6 +196,10 @@ pub enum DragTarget {
     EditorSelect,
     /// Dragging the editor scrollbar thumb.
     Scrollbar,
+    /// Dragging inside the terminal area to select text.
+    TerminalSelect,
+    /// Dragging the terminal scrollback scrollbar thumb.
+    TerminalScrollbar,
 }
 
 pub struct Tab {
@@ -204,6 +209,10 @@ pub struct Tab {
     pub head_text: Option<String>,
     /// Opened from the Git panel as a diff: changed lines get a colored background.
     pub diff_mode: bool,
+    /// Set for files that could not be opened (binary / unreadable): the editor
+    /// shows this message centered instead of the (empty) buffer, and editing is
+    /// disabled so the file is never overwritten.
+    pub notice: Option<String>,
 }
 
 impl Tab {
@@ -214,7 +223,15 @@ impl Tab {
             highlighter,
             head_text: None,
             diff_mode: false,
+            notice: None,
         }
+    }
+
+    /// A read-only tab that just shows an error message (binary / unreadable file).
+    pub fn notice(path: std::path::PathBuf, message: String) -> Self {
+        let mut tab = Tab::new(Buffer::new(Some(path), ""));
+        tab.notice = Some(message);
+        tab
     }
 
     /// Tab bar label: file name, with a "(diff)" suffix for diff-mode tabs.
@@ -286,6 +303,12 @@ impl GitStatus {
             && self.branch.is_some()
             && self.has_remote
             && (self.ahead > 0 || !self.has_upstream)
+    }
+
+    /// Whether the last commit can be undone: a repo with a local commit that has
+    /// not been pushed (ahead of its upstream, or no upstream configured yet).
+    pub fn can_undo_commit(&self) -> bool {
+        self.is_repo && self.branch.is_some() && (self.ahead > 0 || !self.has_upstream)
     }
 
     /// Returns the item at the combined index and whether it is staged.
@@ -454,6 +477,15 @@ pub struct TerminalState {
     pub cols: u16,
     /// The PTY spawn Cmd was sent but the session is not ready yet.
     pub spawn_requested: bool,
+    /// Scrollback view offset from the live bottom (0 = following the bottom,
+    /// higher = further back in history). Mirrors vt100's internal position.
+    pub scroll_offset: usize,
+    /// Total scrollback rows currently held by vt100 (the max scroll offset).
+    /// Used to size the scrollbar thumb.
+    pub scrollback_lines: usize,
+    /// Active text selection in visible-grid coordinates:
+    /// (start_row, start_col, end_row, end_col).
+    pub selection: Option<(u16, u16, u16, u16)>,
 }
 
 impl TerminalState {
@@ -464,6 +496,9 @@ impl TerminalState {
             rows: 24,
             cols: 80,
             spawn_requested: false,
+            scroll_offset: 0,
+            scrollback_lines: 0,
+            selection: None,
         }
     }
 
@@ -479,6 +514,56 @@ impl TerminalState {
                 s.resize(rows, cols);
             }
         }
+        self.sync_scroll_bounds();
+    }
+
+    /// Re-reads the total scrollback vt100 holds and re-applies the view
+    /// position. Call after every `parser.process()`. When the user is scrolled
+    /// back into history, the view stays anchored to the same rows as new output
+    /// pushes older rows further up; when following the bottom it keeps
+    /// following. vt100 clamps the offset, so the read-back value is authoritative.
+    pub fn sync_scroll_bounds(&mut self) {
+        let prev_total = self.scrollback_lines;
+        // Probe the maximum offset (== total scrollback rows).
+        self.parser.set_scrollback(usize::MAX);
+        self.scrollback_lines = self.parser.screen().scrollback();
+        // Keep the same history in view as new rows are appended.
+        let mut target = self.scroll_offset;
+        if target > 0 {
+            target += self.scrollback_lines.saturating_sub(prev_total);
+        }
+        self.parser.set_scrollback(target);
+        self.scroll_offset = self.parser.screen().scrollback();
+    }
+
+    /// Scrolls the view by `delta` rows (positive = back into history). Syncs
+    /// vt100 and stores the clamped offset.
+    pub fn scroll_by(&mut self, delta: isize) {
+        let new = (self.scroll_offset as isize + delta).max(0) as usize;
+        self.parser.set_scrollback(new);
+        self.scroll_offset = self.parser.screen().scrollback();
+    }
+
+    /// Jumps the view to an absolute scrollback offset (0 = live bottom).
+    pub fn scroll_to(&mut self, offset: usize) {
+        self.parser.set_scrollback(offset);
+        self.scroll_offset = self.parser.screen().scrollback();
+    }
+
+    /// Extracts the selected text from the currently visible grid.
+    pub fn selected_text(&self) -> String {
+        let Some((r1, c1, r2, c2)) = self.selection else {
+            return String::new();
+        };
+        // Order by row, then column, so a bottom-up drag copies in reading order.
+        let ((min_r, min_c), (max_r, max_c)) = if (r1, c1) <= (r2, c2) {
+            ((r1, c1), (r2, c2))
+        } else {
+            ((r2, c2), (r1, c1))
+        };
+        self.parser
+            .screen()
+            .contents_between(min_r, min_c, max_r, max_c)
     }
 }
 
@@ -591,6 +676,24 @@ pub struct Model {
     pub completion: Option<CompletionState>,
     /// An in-flight format request awaiting edits.
     pub pending_format: Option<PendingFormat>,
+    /// A transient toast notification shown bottom-center, or `None`.
+    pub toast: Option<Toast>,
+}
+
+/// How long a toast stays on screen.
+pub const TOAST_DURATION: std::time::Duration = std::time::Duration::from_millis(2500);
+
+/// A transient bottom-center notification (e.g. "Copied to clipboard").
+pub struct Toast {
+    pub message: String,
+    /// When the toast was raised; it is shown while `elapsed < TOAST_DURATION`.
+    pub shown_at: std::time::Instant,
+}
+
+impl Toast {
+    pub fn is_expired(&self) -> bool {
+        self.shown_at.elapsed() >= TOAST_DURATION
+    }
 }
 
 /// One visual row of the editor. In a diff tab, removed lines are woven in as
@@ -651,8 +754,19 @@ impl Model {
             diagnostics: std::collections::HashMap::new(),
             completion: None,
             pending_format: None,
+            toast: None,
             root,
         }
+    }
+
+    /// Raises a transient toast notification (bottom-center, auto-hides). Returns
+    /// the command that schedules its disappearance.
+    pub fn show_toast(&mut self, message: impl Into<String>) -> Cmd {
+        self.toast = Some(Toast {
+            message: message.into(),
+            shown_at: std::time::Instant::now(),
+        });
+        Cmd::ScheduleToastExpiry
     }
 
     /// Refreshes the highlight cache if the active buffer changed (called before render).
@@ -891,6 +1005,12 @@ impl Model {
     /// Whether the active tab is a diff-mode tab (changed lines get a colored background).
     pub fn active_is_diff(&self) -> bool {
         self.active_tab.map(|i| self.tabs[i].diff_mode).unwrap_or(false)
+    }
+
+    /// The notice message of the active tab, if it is a read-only error tab.
+    pub fn active_notice(&self) -> Option<&str> {
+        let i = self.active_tab?;
+        self.tabs[i].notice.as_deref()
     }
 
     pub fn panel_icon(&self, panel: Panel) -> &'static str {

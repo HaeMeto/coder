@@ -1,10 +1,10 @@
 //! Code editor: line-number gutter + syntax highlight + selection + cursor.
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::app::model::{Diagnostic, DiffRow, Focus, Model};
 use crate::core::buffer::Cursor;
@@ -17,6 +17,13 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
         Paragraph::new("").style(Style::new().bg(model.theme.bg)),
         area,
     );
+
+    // A binary / unreadable file opens as a read-only tab: show the error
+    // message centered in the editor area instead of an (empty) buffer.
+    if let Some(notice) = model.active_notice() {
+        render_notice(frame, area, model, notice);
+        return;
+    }
 
     let Some(buf) = model.active_buffer() else {
         let hint = Paragraph::new(vec![
@@ -128,12 +135,56 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
         overlay_selection(frame, area, model, buf, gutter_w, start, end, &display, disp_start);
     }
 
-    // Position the cursor (only when the editor is focused).
+    // Draw our own block cursor (only when the editor is focused). A manual
+    // block keeps the caret always white instead of the native terminal cursor,
+    // which reverse-videos the cell and vanishes on gray comment text.
     if model.focus == Focus::Editor
         && let Some((cx, cy)) = cursor_screen_pos(model, area, gutter_w)
+        && let Some(cell) = frame.buffer_mut().cell_mut((cx, cy))
     {
-        frame.set_cursor_position((cx, cy));
+        cell.set_style(
+            Style::new()
+                .bg(Color::White)
+                .fg(model.theme.bg),
+        );
     }
+}
+
+/// Renders a read-only notice (binary / unreadable file) centered in the editor.
+fn render_notice(frame: &mut Frame, area: Rect, model: &Model, notice: &str) {
+    frame.render_widget(
+        Paragraph::new("").style(Style::new().bg(model.theme.bg)),
+        area,
+    );
+    if area.height == 0 || area.width < 4 {
+        return;
+    }
+    // Wrap width the message is laid out in (used to estimate its height).
+    let wrap_w = area.width.saturating_sub(4).min(70).max(1) as usize;
+    let est_lines: u16 = notice
+        .split('\n')
+        .map(|para| {
+            let len = para.chars().count();
+            (len.div_ceil(wrap_w)).max(1) as u16
+        })
+        .sum();
+    // Vertical centering: pad the top so the block sits in the middle.
+    let top_pad = area.height.saturating_sub(est_lines) / 2;
+    let mut lines: Vec<Line> = Vec::new();
+    for _ in 0..top_pad {
+        lines.push(Line::from(""));
+    }
+    for para in notice.split('\n') {
+        lines.push(Line::from(Span::styled(
+            para.to_string(),
+            Style::new().fg(model.theme.fg_dim),
+        )));
+    }
+    let p = Paragraph::new(lines)
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true })
+        .style(Style::new().bg(model.theme.bg));
+    frame.render_widget(p, area);
 }
 
 /// Screen cell of the active buffer's cursor within the editor area, or `None`

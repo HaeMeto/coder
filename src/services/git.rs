@@ -417,6 +417,19 @@ pub fn commit(root: &Path, message: &str) -> Result<(), git2::Error> {
     Ok(())
 }
 
+/// Undoes the last commit (`git reset --soft HEAD~1`): moves HEAD to the parent
+/// while leaving the index and worktree untouched, so the commit's changes stay
+/// staged. Returns the message of the undone commit so the UI can repopulate the
+/// commit box. Fails on the initial (parentless) commit.
+pub fn undo_last_commit(root: &Path) -> Result<String, git2::Error> {
+    let repo = Repository::discover(root)?;
+    let head = repo.head()?.peel_to_commit()?;
+    let message = head.message().unwrap_or("").to_string();
+    let parent = head.parent(0)?; // errors on the root commit (no parent)
+    repo.reset(parent.as_object(), git2::ResetType::Soft, None)?;
+    Ok(message)
+}
+
 
 
 #[cfg(test)]

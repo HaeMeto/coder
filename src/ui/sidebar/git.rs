@@ -2,7 +2,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -75,6 +75,18 @@ fn tree_rows(
 
 /// Height of the commit message box (rows).
 const COMMIT_INPUT_H: u16 = 4;
+
+/// Display width of the leftmost file icon on each change row (glyph + space).
+/// Clicking within these columns opens the plain file instead of the diff.
+const FILE_ICON_W: usize = 2;
+
+/// Labels for the commit-row buttons (Uncommit left-aligned, Commit right-aligned).
+const UNCOMMIT_LABEL: &str = " Uncommit ";
+const COMMIT_LABEL: &str = " Commit ";
+
+/// Disabled-button colors, fixed regardless of the active theme.
+const DISABLED_FG: Color = Color::Rgb(140, 140, 140);
+const DISABLED_BG: Color = Color::Rgb(60, 60, 60);
 
 /// The Git panel layout computed once; shared by render and mouse hit-testing.
 pub struct GitLayout {
@@ -227,12 +239,15 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
     let width = area.width as usize;
     let th = &model.theme;
 
-    // Branch row at the very top.
+    // Branch row at the very top, with a Refresh button pinned to the right.
     if l.branch_shown {
-        let branch = Paragraph::new(Line::from(Span::styled(
-            model.sidebar.git.branch.clone().unwrap_or("".to_string()),
-            Style::new().fg(th.fg),
-        )))
+        let refresh_icon = if model.ascii_icons { "[R]" } else { " ⟳ " };
+        let name_w = width.saturating_sub(refresh_icon.chars().count());
+        let name = model.sidebar.git.branch.clone().unwrap_or_default();
+        let branch = Paragraph::new(Line::from(vec![
+            Span::styled(format!("{name:<name_w$}"), Style::new().fg(th.fg)),
+            Span::styled(refresh_icon.to_string(), Style::new().fg(th.accent)),
+        ]))
         .style(Style::new().bg(th.bg_alt));
         frame.render_widget(
             branch,
@@ -294,7 +309,7 @@ fn render_git_actions(frame: &mut Frame, area: Rect, l: &GitLayout, model: &Mode
         let (fg, bg) = if enabled {
             (th.statusbar_fg, th.accent)
         } else {
-            (th.fg_dim, th.tab_inactive_bg)
+            (DISABLED_FG, DISABLED_BG)
         };
         Span::styled(format!("{label:^w$}"), Style::new().fg(fg).bg(bg))
     };
@@ -399,8 +414,9 @@ fn entry_line(
     };
     let indent = "  ".repeat(depth);
     let name = e.rel.rsplit('/').next().unwrap_or(e.rel.as_str());
-    // indent + prefix (3) + name + suffix (4) = width
-    let avail = width.saturating_sub(indent.len() + 7);
+    let file_icon = if model.ascii_icons { "•" } else { "" };
+    // icon (FILE_ICON_W) + indent + prefix (3) + name + suffix (4) = width
+    let avail = width.saturating_sub(FILE_ICON_W + indent.len() + 6);
     let name_field = format!("{:<avail$}", fit_path(name, avail));
     let line_bg = if selected {
         th.selected_bg()
@@ -408,29 +424,28 @@ fn entry_line(
         th.bg_alt
     };
 
+    // Leftmost: a file icon that opens the plain file (not the diff view).
     let mut spans = vec![
+        Span::styled(file_icon.to_string(), Style::new().fg(th.fg_dim)),
         Span::raw(indent),
         Span::styled(format!(" {} ", e.state.short()), Style::new().fg(color)),
         Span::styled(name_field, Style::new().fg(th.fg)),
     ];
+
     if staged {
-        // Last 4 columns: "  - " → unstage button at width-2.
-        spans.push(Span::raw("  "));
+        spans.push(Span::from("  "));
         spans.push(Span::styled(
             "-".to_string(),
             Style::new().fg(th.git_deleted),
         ));
-        spans.push(Span::raw(" "));
     } else {
-        let revert = if model.ascii_icons { "x" } else { "↺" };
-        // Last 4 columns: "↺ + " → revert at width-4, stage at width-2 (a space between them).
+        let revert = if model.ascii_icons { "x" } else { "↺ " };
+
         spans.push(Span::styled(
             revert.to_string(),
             Style::new().fg(th.git_deleted),
         ));
-        spans.push(Span::raw(" "));
         spans.push(Span::styled("+".to_string(), Style::new().fg(th.git_added)));
-        spans.push(Span::raw(" "));
     }
     Line::from(spans).style(Style::new().bg(line_bg))
 }
@@ -467,19 +482,34 @@ fn render_commit_box(frame: &mut Frame, area: Rect, l: &GitLayout, model: &Model
         },
     );
 
-    // Commit button.
-    let label = " Commit ";
+    // Uncommit (left) and Commit (right), always shown, enabled per state. Both
+    // share the Fetch/Pull button color scheme.
     let can_commit = !g.staged.is_empty() && !g.commit.content().trim().is_empty();
-    let btn_bg = if can_commit {
-        th.accent
-    } else {
-        th.tab_inactive_bg
+    let can_undo = g.can_undo_commit();
+
+    // Same colors as the fetch/pull/push cells.
+    let cell = |label: &str, enabled: bool| -> Span<'static> {
+        let (fg, bg) = if enabled {
+            (th.statusbar_fg, th.accent)
+        } else {
+            (DISABLED_FG, DISABLED_BG)
+        };
+        Span::styled(
+            label.to_string(),
+            Style::new().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+        )
     };
-    let btn = Paragraph::new(Line::from(Span::styled(
-        format!("{label:^width$}"),
-        Style::new().add_modifier(Modifier::BOLD),
-    )))
-    .style(Style::new().bg(btn_bg));
+
+    let uncommit_w = UNCOMMIT_LABEL.chars().count();
+    let commit_w = COMMIT_LABEL.chars().count();
+    let filler = width.saturating_sub(uncommit_w + commit_w).max(1);
+    let spans = vec![
+        cell(UNCOMMIT_LABEL, can_undo),
+        Span::styled(" ".repeat(filler), Style::new().bg(th.bg_alt)),
+        cell(COMMIT_LABEL, can_commit),
+    ];
+
+    let btn = Paragraph::new(Line::from(spans)).style(Style::new().bg(th.bg_alt));
     frame.render_widget(
         btn,
         Rect {
@@ -501,16 +531,32 @@ pub enum GitHit {
     UnstageAll,
     CommitInput,
     CommitButton,
+    UndoLastCommit,
     Fetch,
     Pull,
     Push,
+    /// Reload git status (the Refresh button on the branch row).
+    Refresh,
+    /// Open the plain file (not the diff) — the file icon on a change row.
+    OpenFile(String),
 }
+
+/// Width of the Refresh button at the right end of the branch row.
+const REFRESH_W: usize = 3;
 
 /// Converts the mouse (x, y) into a Git panel target. `area` is the full sidebar area.
 pub fn git_hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<GitHit> {
     let area = panel_area(area);
     let l = git_layout(model, area);
     let g = &model.sidebar.git;
+    // Refresh button: right end of the branch row.
+    if l.branch_shown && y == l.branch_y {
+        let rel = x.saturating_sub(area.x) as usize;
+        if rel >= (area.width as usize).saturating_sub(REFRESH_W) {
+            return Some(GitHit::Refresh);
+        }
+        return None;
+    }
     if l.has_box {
         if y == l.actions_y {
             return match action_at_col(area, x)? {
@@ -520,7 +566,18 @@ pub fn git_hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<GitHit> {
             };
         }
         if y == l.button_y {
-            return Some(GitHit::CommitButton);
+            let rel = x.saturating_sub(area.x) as usize;
+            let width = area.width as usize;
+            let uncommit_w = UNCOMMIT_LABEL.chars().count();
+            let commit_w = COMMIT_LABEL.chars().count();
+            // Uncommit is left-aligned, Commit is right-aligned; the gap is inert.
+            if rel < uncommit_w {
+                return Some(GitHit::UndoLastCommit);
+            }
+            if rel >= width.saturating_sub(commit_w) {
+                return Some(GitHit::CommitButton);
+            }
+            return None;
         }
         if y >= l.input_top && y < l.input_top + COMMIT_INPUT_H {
             return Some(GitHit::CommitInput);
@@ -540,7 +597,9 @@ pub fn git_hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<GitHit> {
     match kind {
         GitRowKind::Staged { idx, .. } => {
             let e = g.staged.get(*idx)?;
-            if wide && col >= width - 2 {
+            if col < FILE_ICON_W {
+                Some(GitHit::OpenFile(e.rel.clone()))
+            } else if wide && col >= width - 3 {
                 Some(GitHit::Unstage(e.rel.clone()))
             } else {
                 Some(GitHit::Entry(*idx))
@@ -550,8 +609,10 @@ pub fn git_hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<GitHit> {
         GitRowKind::UnstageAll => Some(GitHit::UnstageAll),
         GitRowKind::Unstaged { idx, .. } => {
             let e = g.unstaged.get(*idx)?;
-            // Last 4 columns: revert (width-4) · space · stage (width-2).
-            if wide && col >= width - 2 {
+            // Leftmost columns: the file icon opens the plain file.
+            if col < FILE_ICON_W {
+                Some(GitHit::OpenFile(e.rel.clone()))
+            } else if wide && col >= width - 2 {
                 Some(GitHit::Stage(e.rel.clone()))
             } else if wide && col >= width - 4 {
                 Some(GitHit::Revert(e.rel.clone()))

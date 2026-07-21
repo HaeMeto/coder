@@ -24,6 +24,12 @@ pub enum Msg {
         path: PathBuf,
         text: String,
     },
+    /// A file that could not be opened (binary / unreadable): opens a read-only
+    /// tab showing the error message instead of surfacing it only on the statusbar.
+    FileLoadFailed {
+        path: PathBuf,
+        error: String,
+    },
     FileSaved {
         path: PathBuf,
     },
@@ -51,6 +57,10 @@ pub enum Msg {
     ReplaceDone {
         changed: Vec<PathBuf>,
         count: usize,
+    },
+    /// The last commit was undone (soft reset); carries its message to refill the box.
+    GitCommitUndone {
+        message: String,
     },
     /// The HEAD content of a file (for the change gutter).
     HeadTextLoaded {
@@ -125,4 +135,6 @@ pub enum Msg {
     /// Neutral status bar message (without the "Error:" prefix).
     Status(String),
     Error(String),
+    /// The toast duration elapsed: clear the toast if it is actually expired.
+    ToastExpired,
 }
