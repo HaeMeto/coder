@@ -52,12 +52,32 @@ impl FileTree {
         }
     }
 
-    /// Places the scanned entries under `dir`.
+    /// Places the scanned entries under `dir`. A rescan preserves the expansion
+    /// state and already-loaded children of subdirectories that still exist, so
+    /// refreshing a directory (a create/delete, or a live filesystem change)
+    /// never collapses the tree beneath it.
     pub fn set_children(&mut self, dir: &Path, entries: Vec<(PathBuf, bool)>) {
+        // Pull out the current children so surviving subdirs can be carried over.
+        let prev = if dir == self.root {
+            self.children.take()
+        } else {
+            self.find_node_mut(dir).and_then(|n| n.children.take())
+        };
+        let mut prev: std::collections::HashMap<PathBuf, Node> = prev
+            .unwrap_or_default()
+            .into_iter()
+            .map(|n| (n.path.clone(), n))
+            .collect();
+
         let nodes: Vec<Node> = entries
             .into_iter()
-            .map(|(p, is_dir)| Node::new(p, is_dir))
+            .map(|(p, is_dir)| match prev.remove(&p) {
+                // Keep the old subdir node (its expansion + loaded children).
+                Some(old) if old.is_dir == is_dir => old,
+                _ => Node::new(p, is_dir),
+            })
             .collect();
+
         if dir == self.root {
             self.children = Some(nodes);
         } else if let Some(node) = self.find_node_mut(dir) {
@@ -142,5 +162,47 @@ impl FileTree {
             rec(children, 0, &mut rows);
         }
         rows
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dir(p: &str) -> (PathBuf, bool) {
+        (PathBuf::from(p), true)
+    }
+    fn file(p: &str) -> (PathBuf, bool) {
+        (PathBuf::from(p), false)
+    }
+
+    #[test]
+    fn rescan_preserves_expanded_subdir_and_shows_new_entry() {
+        let mut t = FileTree::new(PathBuf::from("/root"));
+        t.set_children(&PathBuf::from("/root"), vec![dir("/root/sub")]);
+        // Expand + load the subdir.
+        t.set_children(&PathBuf::from("/root/sub"), vec![file("/root/sub/a.rs")]);
+        assert!(t.is_expanded(&PathBuf::from("/root/sub")));
+
+        // A new file appears at the root (external change) -> rescan the root.
+        t.set_children(
+            &PathBuf::from("/root"),
+            vec![dir("/root/sub"), file("/root/new.rs")],
+        );
+
+        // The subdir stays expanded with its children, and the new file is visible.
+        assert!(t.is_expanded(&PathBuf::from("/root/sub")));
+        assert!(t.is_loaded(&PathBuf::from("/root/sub")));
+        let paths: Vec<_> = t.visible_rows().into_iter().map(|r| r.path).collect();
+        assert!(paths.contains(&PathBuf::from("/root/sub/a.rs")));
+        assert!(paths.contains(&PathBuf::from("/root/new.rs")));
+    }
+
+    #[test]
+    fn rescan_drops_removed_entry() {
+        let mut t = FileTree::new(PathBuf::from("/root"));
+        t.set_children(&PathBuf::from("/root"), vec![file("/root/gone.rs")]);
+        t.set_children(&PathBuf::from("/root"), vec![]);
+        assert!(t.visible_rows().is_empty());
     }
 }

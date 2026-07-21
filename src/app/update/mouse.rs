@@ -235,6 +235,14 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
     match model.sidebar.active {
         Panel::Files => {
             use ui::sidebar::FileHit;
+            // Header buttons (create in the workspace root) take priority.
+            if let Some(hit) = ui::sidebar::files_header_hit(a.sidebar, x, y) {
+                return match hit {
+                    FileHit::NewFileRoot => new_root_entry_dialog(model, false),
+                    FileHit::NewFolderRoot => new_root_entry_dialog(model, true),
+                    _ => Vec::new(),
+                };
+            }
             match ui::sidebar::file_hit(model, a.sidebar, x, y) {
                 Some(FileHit::Row(idx)) => {
                     model.sidebar.files.selected = idx;
@@ -243,6 +251,8 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
                 }
                 Some(FileHit::NewFile(idx)) => new_entry_dialog(model, idx, false),
                 Some(FileHit::NewFolder(idx)) => new_entry_dialog(model, idx, true),
+                Some(FileHit::NewFileRoot) => new_root_entry_dialog(model, false),
+                Some(FileHit::NewFolderRoot) => new_root_entry_dialog(model, true),
                 None => Vec::new(),
             }
         }

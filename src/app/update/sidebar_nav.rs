@@ -129,6 +129,26 @@ pub(super) fn new_entry_dialog(model: &mut Model, idx: usize, is_dir: bool) -> V
     Vec::new()
 }
 
+/// Opens the "new file"/"new folder" dialog for the workspace root, from the
+/// Files panel header buttons.
+pub(super) fn new_root_entry_dialog(model: &mut Model, is_dir: bool) -> Vec<Cmd> {
+    let dir = model.sidebar.files.root.clone();
+    model.focus = Focus::Sidebar;
+    let kind = if is_dir { "folder" } else { "file" };
+    let (title, action) = if is_dir {
+        ("New Folder", DialogAction::NewFolder(dir))
+    } else {
+        ("New File", DialogAction::NewFile(dir))
+    };
+    model.dialog = Some(Dialog::input(
+        title.to_string(),
+        format!("Name of the new {kind} in the workspace root:"),
+        String::new(),
+        action,
+    ));
+    Vec::new()
+}
+
 /// Opens the rename dialog for the tree row at `idx`, pre-filled with its name.
 pub(super) fn rename_dialog(model: &mut Model, idx: usize) -> Vec<Cmd> {
     let rows = model.sidebar.files.visible_rows();

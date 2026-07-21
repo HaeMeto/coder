@@ -59,9 +59,10 @@ pub enum Cmd {
         match_case: bool,
         search_hidden: bool,
     },
-    /// Replace within a single file (from the search panel's "Replace" button).
-    RunReplaceFile {
+    /// Replace only on one result's line (the search panel's "Replace" button).
+    RunReplaceLine {
         path: PathBuf,
+        line_no: usize,
         query: String,
         replace: String,
         use_regex: bool,
@@ -479,16 +480,17 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
                 let _ = tx.send(Msg::ReplaceDone { changed, count });
             });
         }
-        Cmd::RunReplaceFile {
+        Cmd::RunReplaceLine {
             path,
+            line_no,
             query,
             replace,
             use_regex,
             match_case,
         } => {
             tokio::task::spawn_blocking(move || {
-                let count = services::search::replace_in_file(
-                    &path, &query, &replace, use_regex, match_case,
+                let count = services::search::replace_in_line(
+                    &path, line_no, &query, &replace, use_regex, match_case,
                 );
                 let changed = if count > 0 { vec![path] } else { Vec::new() };
                 let _ = tx.send(Msg::ReplaceDone { changed, count });

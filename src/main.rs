@@ -187,7 +187,10 @@ fn create_watcher(tx: UnboundedSender<Msg>) -> Option<notify::RecommendedWatcher
     use notify::EventKind;
     notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(event) = res
-            && matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_))
+            && matches!(
+                event.kind,
+                EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+            )
         {
             for path in event.paths {
                 let _ = tx.send(Msg::DiskChanged(path));

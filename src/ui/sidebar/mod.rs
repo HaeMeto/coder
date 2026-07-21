@@ -18,7 +18,7 @@ use ratatui::widgets::{Block, Paragraph};
 
 use crate::app::model::{Model, Panel};
 
-pub use files::{FileHit, file_hit, file_row_at};
+pub use files::{FileHit, file_hit, file_row_at, files_header_hit};
 pub use git::{GitHit, git_hit};
 pub use search::{SearchHit, search_hit};
 pub use settings::settings_row_at;
@@ -26,7 +26,7 @@ pub use themes::theme_row_at;
 
 /// Insets a rect by 1 cell on every side (the sidebar's inner padding). Render
 /// and all hit-testing pass the sidebar area through this so they stay aligned.
-fn content_rect(area: Rect) -> Rect {
+pub(super) fn content_rect(area: Rect) -> Rect {
     Rect {
         x: area.x + 1,
         y: area.y + 1,
@@ -78,6 +78,12 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
     )))
     .style(Style::new().bg(model.theme.bg_alt));
     frame.render_widget(title, Rect { height: 1, ..inner });
+
+    // The Files panel gets root "new file"/"new folder" buttons at the right
+    // edge of its title row (create directly in the workspace root).
+    if model.sidebar.active == Panel::Files {
+        files::render_header_actions(frame, area, model);
+    }
 
     // Every panel (and its hit-test) works off the same body region.
     let body = panel_area(area);

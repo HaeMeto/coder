@@ -107,24 +107,38 @@ fn build_theme(p: &Palette) -> SynTheme {
         gutter_foreground: Some(hexc(p.comment)),
         ..Default::default()
     };
+    // Broad scope coverage so hand-rolled palettes color as many token kinds as
+    // the full bundled themes (base16 etc.). syntect prefix-matches, so `keyword`
+    // already covers `keyword.operator.*`; the extra selectors below reach scopes
+    // that would otherwise fall back to plain foreground (e.g. Python `self`,
+    // escape sequences, base classes, decorators).
     let scopes = vec![
-        scope_item("comment", p.comment),
-        scope_item("string, string.quoted", p.string),
+        scope_item("comment, punctuation.definition.comment", p.comment),
         scope_item(
-            "constant.numeric, constant.language, constant.character, constant",
+            "string, string.quoted, string.template, constant.character.escape, punctuation.definition.string",
+            p.string,
+        ),
+        scope_item(
+            "constant.numeric, constant.language, constant.character, constant, support.constant",
             p.constant,
         ),
-        scope_item("keyword, storage.modifier, keyword.control", p.keyword),
         scope_item(
-            "entity.name.function, support.function, meta.function-call",
+            "keyword, storage.modifier, keyword.control, keyword.operator.word, keyword.operator.logical, variable.language",
+            p.keyword,
+        ),
+        scope_item(
+            "entity.name.function, support.function, meta.function-call, variable.function",
             p.func,
         ),
         scope_item(
-            "entity.name.type, entity.name.class, support.type, support.class, storage.type",
+            "entity.name.type, entity.name.class, entity.other.inherited-class, support.type, support.class, storage.type, entity.name.namespace",
             p.type_,
         ),
         scope_item("entity.name.tag", p.keyword),
-        scope_item("entity.other.attribute-name", p.type_),
+        scope_item(
+            "entity.other.attribute-name, variable.annotation, meta.decorator",
+            p.type_,
+        ),
     ];
     SynTheme {
         name: Some(p.name.to_string()),

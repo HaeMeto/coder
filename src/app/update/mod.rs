@@ -180,7 +180,19 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             // ahead/behind counts, buttons and the Changes list stay live — but
             // only while it is open, to avoid running `git status` on every keystroke.
             let in_git = path.components().any(|c| c.as_os_str() == ".git");
-            let mut cmds = reload_if_clean(model, path);
+            // Live-refresh the file tree: if the changed path sits in a directory
+            // the tree has loaded, rescan that directory so new/removed entries
+            // appear without reopening the folder. `set_children` merges, so
+            // expanded subdirs are preserved. Only watched (already-scanned) dirs
+            // fire here, so nothing is walked eagerly.
+            let mut cmds = Vec::new();
+            if !in_git
+                && let Some(parent) = path.parent()
+                && (parent == model.sidebar.files.root || model.sidebar.files.is_loaded(parent))
+            {
+                cmds.push(Cmd::ScanDir(parent.to_path_buf()));
+            }
+            cmds.extend(reload_if_clean(model, path));
             if in_git || model.sidebar.active == Panel::Git {
                 cmds.push(Cmd::LoadGitStatus);
             }

@@ -8,7 +8,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::app::model::Model;
 
-use super::{list_scroll, panel_area};
+use super::{content_rect, list_scroll, panel_area};
 
 /// Columns reserved at the right edge of a directory row for the
 /// "new file" / "new folder" buttons: `[icon][space][icon][space]`.
@@ -24,6 +24,10 @@ pub enum FileHit {
     NewFile(usize),
     /// The "new folder" button on the directory row at this index.
     NewFolder(usize),
+    /// The "new file" button in the panel header (create in the workspace root).
+    NewFileRoot,
+    /// The "new folder" button in the panel header (create in the workspace root).
+    NewFolderRoot,
 }
 
 /// (new file, new folder) button glyphs — codicons, or ASCII when `CODER_ASCII` is set.
@@ -90,6 +94,49 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
     }
     let p = Paragraph::new(lines).style(Style::new().bg(model.theme.bg_alt));
     frame.render_widget(p, area);
+}
+
+/// The title row of the sidebar (first row of the inset content area).
+fn header_row(area: Rect) -> Rect {
+    Rect { height: 1, ..content_rect(area) }
+}
+
+/// Draws the root "new file"/"new folder" buttons at the right edge of the
+/// Files panel title row. Mirrors the per-directory buttons: `[file][ ][folder][ ]`.
+pub(super) fn render_header_actions(frame: &mut Frame, area: Rect, model: &Model) {
+    let row = header_row(area);
+    if (row.width as usize) < MIN_ACTION_WIDTH {
+        return;
+    }
+    let (new_file, new_folder) = action_icons(model);
+    let x = row.x + row.width - ACTION_COLS as u16;
+    let target = Rect { x, width: ACTION_COLS as u16, ..row };
+    let spans = vec![
+        Span::styled(new_file, Style::new().fg(model.theme.fg_dim)),
+        Span::raw(" "),
+        Span::styled(new_folder, Style::new().fg(model.theme.fg_dim)),
+        Span::raw(" "),
+    ];
+    let p = Paragraph::new(Line::from(spans)).style(Style::new().bg(model.theme.bg_alt));
+    frame.render_widget(p, target);
+}
+
+/// Hit-test for the Files header buttons. `area` is the full sidebar rect (as
+/// passed to `file_hit`). Mirrors `render_header_actions`' right-edge layout.
+pub fn files_header_hit(area: Rect, x: u16, y: u16) -> Option<FileHit> {
+    let row = header_row(area);
+    let width = row.width as usize;
+    if y != row.y || x < row.x || x >= row.x + row.width || width < MIN_ACTION_WIDTH {
+        return None;
+    }
+    let col = x.saturating_sub(row.x) as usize;
+    if col >= width - 2 {
+        return Some(FileHit::NewFolderRoot);
+    }
+    if col >= width - ACTION_COLS {
+        return Some(FileHit::NewFileRoot);
+    }
+    None
 }
 
 /// Truncates a name to `max` columns, marking the cut with `…`.
