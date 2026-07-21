@@ -1,0 +1,106 @@
+%YAML 1.2
+---
+# Minimal TOML syntax for syntect (syntect's bundled defaults omit TOML).
+name: TOML
+file_extensions:
+  - toml
+scope: source.toml
+
+contexts:
+  main:
+    - include: comments
+    - include: tables
+    - include: keys
+    - include: values
+
+  comments:
+    - match: '#'
+      scope: punctuation.definition.comment.toml
+      push:
+        - meta_scope: comment.line.number-sign.toml
+        - match: '$'
+          pop: true
+
+  tables:
+    # [[array of tables]]
+    - match: '(\[\[)([^\]]*)(\]\])'
+      captures:
+        1: punctuation.definition.table.array.toml
+        2: entity.name.section.toml keyword.other.table.toml
+        3: punctuation.definition.table.array.toml
+    # [table]
+    - match: '(\[)([^\]]*)(\])'
+      captures:
+        1: punctuation.definition.table.toml
+        2: entity.name.section.toml keyword.other.table.toml
+        3: punctuation.definition.table.toml
+
+  keys:
+    # bare / dotted key  =
+    - match: '([A-Za-z0-9_][A-Za-z0-9_.-]*)\s*(=)'
+      captures:
+        1: variable.other.key.toml
+        2: punctuation.separator.key-value.toml
+    # quoted key  =
+    - match: '("[^"]*"|''[^'']*'')\s*(=)'
+      captures:
+        1: variable.other.key.toml
+        2: punctuation.separator.key-value.toml
+
+  values:
+    - include: strings
+    - include: numbers
+    - include: booleans
+
+  strings:
+    - match: '"""'
+      scope: punctuation.definition.string.begin.toml
+      push:
+        - meta_scope: string.quoted.triple.double.toml
+        - match: '"""'
+          scope: punctuation.definition.string.end.toml
+          pop: true
+    - match: "'''"
+      scope: punctuation.definition.string.begin.toml
+      push:
+        - meta_scope: string.quoted.triple.single.toml
+        - match: "'''"
+          scope: punctuation.definition.string.end.toml
+          pop: true
+    - match: '"'
+      scope: punctuation.definition.string.begin.toml
+      push:
+        - meta_scope: string.quoted.double.toml
+        - match: '\\.'
+          scope: constant.character.escape.toml
+        - match: '"'
+          scope: punctuation.definition.string.end.toml
+          pop: true
+        - match: '$'
+          pop: true
+    - match: "'"
+      scope: punctuation.definition.string.begin.toml
+      push:
+        - meta_scope: string.quoted.single.toml
+        - match: "'"
+          scope: punctuation.definition.string.end.toml
+          pop: true
+        - match: '$'
+          pop: true
+
+  numbers:
+    # RFC 3339 date-time
+    - match: '\d{4}-\d{2}-\d{2}([Tt ]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})?)?'
+      scope: constant.numeric.date.toml
+    - match: '\b0x[0-9A-Fa-f_]+\b'
+      scope: constant.numeric.hex.toml
+    - match: '[+-]?(?:\d[\d_]*)?\.\d[\d_]*([eE][+-]?\d+)?'
+      scope: constant.numeric.float.toml
+    - match: '[+-]?\d[\d_]*([eE][+-]?\d+)?'
+      scope: constant.numeric.integer.toml
+    - match: '\b(?:inf|nan)\b'
+      scope: constant.numeric.toml
+
+  booleans:
+    - match: '\b(?:true|false)\b'
+      scope: constant.language.boolean.toml

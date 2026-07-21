@@ -10,7 +10,7 @@ use syntect::highlighting::{
     Color as SynColor, ScopeSelectors, Style as SynStyle, StyleModifier, Theme as SynTheme,
     ThemeItem, ThemeSet, ThemeSettings,
 };
-use syntect::parsing::{SyntaxReference, SyntaxSet};
+use syntect::parsing::{SyntaxDefinition, SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
 
 use crate::core::theme::Theme;
@@ -18,8 +18,39 @@ use crate::core::theme::Theme;
 static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
 static THEME_SET: OnceLock<ThemeSet> = OnceLock::new();
 
+/// Sublime-syntax definitions compiled into the binary for languages syntect
+/// doesn't bundle (e.g. TOML), so highlighting works without external files.
+static EMBEDDED_SYNTAXES: &[&str] =
+    &[include_str!("../../assets/syntaxes/TOML.sublime-syntax")];
+
 fn syntax_set() -> &'static SyntaxSet {
-    SYNTAX_SET.get_or_init(SyntaxSet::load_defaults_newlines)
+    SYNTAX_SET.get_or_init(|| {
+        // `_newlines` because `highlight_line` is fed lines that keep their `\n`.
+        let mut builder = SyntaxSet::load_defaults_newlines().into_builder();
+        for src in EMBEDDED_SYNTAXES {
+            if let Ok(def) = SyntaxDefinition::load_from_str(src, true, None) {
+                builder.add(def);
+            }
+        }
+        // Extra user/asset syntaxes (best-effort, silently skipped if absent).
+        for dir in syntax_dirs() {
+            let _ = builder.add_from_folder(&dir, true);
+        }
+        builder.build()
+    })
+}
+
+/// Folders searched for extra `.sublime-syntax` files: user config, env override, repo assets.
+fn syntax_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(home) = std::env::var("HOME") {
+        dirs.push(PathBuf::from(home).join(".config/coder/syntaxes"));
+    }
+    if let Ok(d) = std::env::var("CODER_SYNTAXES_DIR") {
+        dirs.push(PathBuf::from(d));
+    }
+    dirs.push(PathBuf::from("assets/syntaxes"));
+    dirs
 }
 
 fn theme_set() -> &'static ThemeSet {
@@ -338,5 +369,22 @@ mod tests {
         // The derived UI palette should differ from the default (settings are read).
         let t = theme_for("Dracula");
         assert_eq!(t.bg, Color::Rgb(0x28, 0x2a, 0x36));
+    }
+
+    #[test]
+    fn toml_files_resolve_to_toml_syntax() {
+        let hl = Highlighter::for_path(Some(Path::new("config.toml")));
+        assert_eq!(hl.syntax_name, "TOML");
+    }
+
+    #[test]
+    fn toml_line_highlights_multiple_scopes() {
+        let mut hl = Highlighter::for_path(Some(Path::new("config.toml")));
+        // A key, a string and a comment should come out as distinct colors, not
+        // one flat run of plain-text foreground.
+        let lines = hl.highlight("theme = \"dark\" # note\n", 0);
+        let colors: std::collections::HashSet<_> =
+            lines[0].iter().map(|(c, _)| *c).collect();
+        assert!(colors.len() >= 3, "expected varied coloring, got {colors:?}");
     }
 }
