@@ -359,6 +359,8 @@ pub enum DialogAction {
     Rename(PathBuf),
     /// Delete the given path (recursively for a directory).
     Delete(PathBuf),
+    /// Close the tab at the given index (user confirmed the dirty-tab dialog).
+    CloseTab(usize, String),
 }
 
 /// Modal dialog opened in the center of the screen. Captures all input while open.

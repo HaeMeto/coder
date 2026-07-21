@@ -70,6 +70,10 @@ fn dialog_confirm(model: &mut Model) -> Vec<Cmd> {
         DialogAction::NewFolder(dir) => create_in(model, dir, &d.input, true),
         DialogAction::Rename(path) => rename_to(model, path, &d.input),
         DialogAction::Delete(path) => vec![Cmd::DeletePath(path)],
+        DialogAction::CloseTab(i, _path) => {
+            model.dialog = None;
+            close_tab(model, i)
+        }
         DialogAction::None => Vec::new(),
     }
 }

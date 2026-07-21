@@ -104,7 +104,7 @@ pub(super) fn handle_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
                 let i = match hit {
                     ui::tabs::TabHit::Select(i) | ui::tabs::TabHit::Close(i) => i,
                 };
-                return close_tab(model, i);
+                return close_tab_with_dirty_check(model, i);
             }
             Vec::new()
         }
@@ -174,7 +174,7 @@ fn mouse_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
     }
     if rect_contains(a.tabs, x, y) {
         match ui::tabs::tab_at(model, a.tabs, x) {
-            Some(ui::tabs::TabHit::Close(i)) => return close_tab(model, i),
+            Some(ui::tabs::TabHit::Close(i)) => return close_tab_with_dirty_check(model, i),
             Some(ui::tabs::TabHit::Select(i)) => {
                 model.active_tab = Some(i);
                 model.focus = Focus::Editor;
