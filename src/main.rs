@@ -1,6 +1,7 @@
 //! coder — a VSCode-like editor running in the terminal (Rust + ratatui + Elm Architecture).
 
 mod app;
+mod cli;
 mod core;
 mod services;
 mod ui;
@@ -29,14 +30,45 @@ type Tui = Terminal<CrosstermBackend<Stdout>>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let root = std::env::args()
-        .nth(1)
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+    // The shell invoked us as a completion helper (`complete -C coder coder`):
+    // reply with path candidates and exit before touching the terminal, so Tab
+    // never launches the TUI and freezes the shell.
+    if cli::is_completion_helper() {
+        cli::completion_reply();
+        return Ok(());
+    }
+
+    let args = <cli::Cli as clap::Parser>::parse();
+    if let Some(cli::Command::Completions { shell }) = args.command {
+        cli::print_completions(shell);
+        return Ok(());
+    }
+
+    // The argument may be a directory (workspace root) or a single file.
+    let arg = args.path;
+    let (root, open_file) = match arg {
+        Some(p) => {
+            let p = p.canonicalize().unwrap_or(p);
+            if p.is_file() {
+                // Opened with a file: root is its directory, and we open the file.
+                let parent = p
+                    .parent()
+                    .map(|d| d.to_path_buf())
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+                (parent, Some(p))
+            } else {
+                (p, None)
+            }
+        }
+        None => (
+            std::env::current_dir().unwrap_or_else(|_| ".".into()),
+            None,
+        ),
+    };
     let root = root.canonicalize().unwrap_or(root);
 
     let mut terminal = setup_terminal()?;
-    let result = run(&mut terminal, root).await;
+    let result = run(&mut terminal, root, open_file).await;
     restore_terminal(&mut terminal)?;
     result
 }
@@ -69,7 +101,11 @@ fn restore_terminal(terminal: &mut Tui) -> Result<()> {
     Ok(())
 }
 
-async fn run(terminal: &mut Tui, root: std::path::PathBuf) -> Result<()> {
+async fn run(
+    terminal: &mut Tui,
+    root: std::path::PathBuf,
+    open_file: Option<std::path::PathBuf>,
+) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
     let mut model = Model::new(root.clone());
 
@@ -79,14 +115,20 @@ async fn run(terminal: &mut Tui, root: std::path::PathBuf) -> Result<()> {
     }
 
     // Watch the workspace for external file changes (best-effort; kept alive here).
-    let _watcher = spawn_watcher(root.clone(), tx.clone());
+    // Directories are watched non-recursively and lazily, one per scan, so opening a
+    // large tree (e.g. $HOME from the app menu) never blocks startup.
+    let mut watcher = create_watcher(tx.clone());
 
     // Initial side effects: scan the root directory + load git status.
-    dispatch(
-        vec![Cmd::ScanDir(root.clone()), Cmd::LoadGitStatus],
-        &model,
-        &tx,
-    );
+    let mut cmds = vec![Cmd::ScanDir(root.clone()), Cmd::LoadGitStatus];
+    // Opened with a file: keep the sidebar collapsed (the user opens it when needed)
+    // and load the file straight into the editor.
+    if let Some(file) = open_file {
+        model.layout.sidebar_open = false;
+        model.focus = crate::app::model::Focus::Editor;
+        cmds.push(Cmd::ReadFile(file));
+    }
+    dispatch(cmds, &model, &tx);
 
     let mut events = EventStream::new();
 
@@ -112,10 +154,12 @@ async fn run(terminal: &mut Tui, root: std::path::PathBuf) -> Result<()> {
             }
             maybe_msg = rx.recv() => {
                 let Some(msg) = maybe_msg else { break };
+                watch_scanned_dir(&mut watcher, &msg);
                 let cmds = update(&mut model, msg);
                 dispatch(cmds, &model, &tx);
                 // Drain pending messages (e.g. heavy PTY output).
                 while let Ok(msg) = rx.try_recv() {
+                    watch_scanned_dir(&mut watcher, &msg);
                     let cmds = update(&mut model, msg);
                     dispatch(cmds, &model, &tx);
                 }
@@ -125,15 +169,23 @@ async fn run(terminal: &mut Tui, root: std::path::PathBuf) -> Result<()> {
     Ok(())
 }
 
-/// Starts a recursive filesystem watcher on `root`; each change becomes a
-/// `Msg::DiskChanged`. Returns the watcher (must stay alive to keep watching);
-/// `None` if the platform watcher could not be created.
-fn spawn_watcher(
-    root: std::path::PathBuf,
-    tx: UnboundedSender<Msg>,
-) -> Option<notify::RecommendedWatcher> {
-    use notify::{EventKind, RecursiveMode, Watcher};
-    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+/// Adds a non-recursive watch on a directory as soon as it is scanned, so changes
+/// in the folders the user actually opened are picked up — without walking the
+/// whole tree up front.
+fn watch_scanned_dir(watcher: &mut Option<notify::RecommendedWatcher>, msg: &Msg) {
+    use notify::{RecursiveMode, Watcher};
+    if let (Some(w), Msg::DirScanned { path, .. }) = (watcher.as_mut(), msg) {
+        let _ = w.watch(path, RecursiveMode::NonRecursive);
+    }
+}
+
+/// Builds a filesystem watcher; each change becomes a `Msg::DiskChanged`. No paths
+/// are watched yet — directories are added non-recursively as they are scanned (see
+/// `watch_scanned_dir`), so startup never walks the whole tree. Returns the watcher
+/// (must stay alive to keep watching); `None` if the platform watcher failed.
+fn create_watcher(tx: UnboundedSender<Msg>) -> Option<notify::RecommendedWatcher> {
+    use notify::EventKind;
+    notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(event) = res
             && matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_))
         {
@@ -142,9 +194,7 @@ fn spawn_watcher(
             }
         }
     })
-    .ok()?;
-    watcher.watch(&root, RecursiveMode::Recursive).ok()?;
-    Some(watcher)
+    .ok()
 }
 
 /// Converts a crossterm event into application messages.
