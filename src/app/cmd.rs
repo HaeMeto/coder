@@ -14,15 +14,24 @@ use crate::services::lsp::{LspClientMsg, Token};
 pub enum Cmd {
     ScanDir(PathBuf),
     /// Create a new empty file (`is_dir` = false) or directory, then re-scan its parent.
-    CreatePath { path: PathBuf, is_dir: bool },
+    CreatePath {
+        path: PathBuf,
+        is_dir: bool,
+    },
     /// Rename a file/directory, then re-scan its parent.
-    RenamePath { from: PathBuf, to: PathBuf },
+    RenamePath {
+        from: PathBuf,
+        to: PathBuf,
+    },
     /// Delete a file (or a directory and its contents), then re-scan its parent.
     DeletePath(PathBuf),
     ReadFile(PathBuf),
     /// Re-read a file that changed on disk (result -> `Msg::FileReloaded`).
     ReloadFile(PathBuf),
-    WriteFile { path: PathBuf, contents: String },
+    WriteFile {
+        path: PathBuf,
+        contents: String,
+    },
     /// Load the HEAD content of a file for the change gutter.
     LoadHeadText(PathBuf),
     LoadGitStatus,
@@ -58,7 +67,10 @@ pub enum Cmd {
         use_regex: bool,
         match_case: bool,
     },
-    SpawnPty { rows: u16, cols: u16 },
+    SpawnPty {
+        rows: u16,
+        cols: u16,
+    },
     /// Start a language server for a language (idempotent per language).
     LspEnsureStarted {
         language: String,
@@ -71,7 +83,10 @@ pub enum Cmd {
         msg: LspClientMsg,
     },
     /// Debounce a didChange: after a short delay, emit `Msg::DidChangeDue`.
-    ScheduleDidChange { path: PathBuf, version: u64 },
+    ScheduleDidChange {
+        path: PathBuf,
+        version: u64,
+    },
     /// Run a standalone formatter (stdin -> stdout) on the buffer text.
     RunFormatterTool {
         path: PathBuf,
@@ -120,7 +135,11 @@ fn parse_linter_output(text: &str) -> Vec<(usize, usize, String)> {
             let caps = re.captures(line)?;
             let ln: usize = caps.get(1)?.as_str().parse().ok()?;
             let col: usize = caps.get(2)?.as_str().parse().ok()?;
-            let msg = caps.get(3).map(|m| m.as_str().trim()).unwrap_or("").to_string();
+            let msg = caps
+                .get(3)
+                .map(|m| m.as_str().trim())
+                .unwrap_or("")
+                .to_string();
             // Linter positions are 1-based; store 0-based.
             Some((ln.saturating_sub(1), col.saturating_sub(1), msg))
         })
@@ -135,7 +154,11 @@ mod tests {
     fn run_tool_pipes_stdin_to_stdout() {
         use crate::services::extensions::ToolSpec;
         // `tr a-z A-Z` uppercases stdin — a deterministic stand-in for a formatter.
-        if std::process::Command::new("tr").arg("--version").output().is_err() {
+        if std::process::Command::new("tr")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
             return;
         }
         let spec = ToolSpec {
@@ -149,7 +172,8 @@ mod tests {
 
     #[test]
     fn parses_ruff_style_output() {
-        let out = "app.py:3:5: F401 unused import\napp.py:10:1: E302 expected 2 blank lines\nnoise line";
+        let out =
+            "app.py:3:5: F401 unused import\napp.py:10:1: E302 expected 2 blank lines\nnoise line";
         let items = parse_linter_output(out);
         assert_eq!(items.len(), 2);
         // 1-based input -> 0-based storage.
@@ -202,14 +226,12 @@ fn send_git_status(root: &std::path::Path, tx: &UnboundedSender<Msg>) {
 pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
     match cmd {
         Cmd::ScanDir(path) => {
-            tokio::task::spawn_blocking(move || {
-                match services::fs::scan_dir(&path) {
-                    Ok(entries) => {
-                        let _ = tx.send(Msg::DirScanned { path, entries });
-                    }
-                    Err(e) => {
-                        let _ = tx.send(Msg::Error(format!("could not scan directory: {e}")));
-                    }
+            tokio::task::spawn_blocking(move || match services::fs::scan_dir(&path) {
+                Ok(entries) => {
+                    let _ = tx.send(Msg::DirScanned { path, entries });
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::Error(format!("could not scan directory: {e}")));
                 }
             });
         }
@@ -226,7 +248,7 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
                             .file_name()
                             .map(|n| n.to_string_lossy().into_owned())
                             .unwrap_or_default();
-                        let _ = tx.send(Msg::Status(format!("Created '{name}'")));
+                        let _ = tx.send(Msg::Toast(format!("Created File '{name}'")));
                         rescan_parent(&path, &tx);
                     }
                     Err(e) => {
@@ -250,15 +272,13 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
             });
         }
         Cmd::DeletePath(path) => {
-            tokio::task::spawn_blocking(move || {
-                match services::fs::delete_path(&path) {
-                    Ok(()) => {
-                        rescan_parent(&path, &tx);
-                        let _ = tx.send(Msg::PathDeleted(path));
-                    }
-                    Err(e) => {
-                        let _ = tx.send(Msg::Error(format!("could not delete: {e}")));
-                    }
+            tokio::task::spawn_blocking(move || match services::fs::delete_path(&path) {
+                Ok(()) => {
+                    rescan_parent(&path, &tx);
+                    let _ = tx.send(Msg::PathDeleted(path));
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::Error(format!("could not delete: {e}")));
                 }
             });
         }
@@ -360,7 +380,7 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
             tokio::task::spawn_blocking(move || {
                 match services::git::commit(&root, &message) {
                     Ok(()) => {
-                        let _ = tx.send(Msg::Status("Committed".to_string()));
+                        let _ = tx.send(Msg::Toast("Committed".to_string()));
                     }
                     Err(e) => {
                         let _ = tx.send(Msg::Error(format!("commit failed: {e}")));
@@ -374,7 +394,7 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
                 match services::git::undo_last_commit(&root) {
                     Ok(message) => {
                         let _ = tx.send(Msg::GitCommitUndone { message });
-                        let _ = tx.send(Msg::Status("Undid last commit".to_string()));
+                        let _ = tx.send(Msg::Toast("Undid last commit".to_string()));
                     }
                     Err(e) => {
                         let _ = tx.send(Msg::Error(format!("undo commit failed: {e}")));
@@ -429,8 +449,14 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
             search_hidden,
         } => {
             tokio::task::spawn_blocking(move || {
-                let matches =
-                    services::search::search(&root, &query, use_regex, match_case, search_hidden, 500);
+                let matches = services::search::search(
+                    &root,
+                    &query,
+                    use_regex,
+                    match_case,
+                    search_hidden,
+                    500,
+                );
                 let _ = tx.send(Msg::SearchResults { query, matches });
             });
         }
@@ -461,8 +487,9 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
             match_case,
         } => {
             tokio::task::spawn_blocking(move || {
-                let count =
-                    services::search::replace_in_file(&path, &query, &replace, use_regex, match_case);
+                let count = services::search::replace_in_file(
+                    &path, &query, &replace, use_regex, match_case,
+                );
                 let changed = if count > 0 { vec![path] } else { Vec::new() };
                 let _ = tx.send(Msg::ReplaceDone { changed, count });
             });
@@ -519,7 +546,7 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
                         Ok(out) => first_line(&String::from_utf8_lossy(&out.stderr)),
                         Err(e) => e.to_string(),
                     };
-                    let _ = tx.send(Msg::Status(format!("formatter failed: {detail}")));
+                    let _ = tx.send(Msg::Toast(format!("formatter failed: {detail}")));
                     // Don't lose the user's save: write the original text.
                     if save_after {
                         let _ = std::fs::write(&path, &text);
