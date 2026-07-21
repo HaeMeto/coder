@@ -403,6 +403,10 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             model.status_message = format!("Error: {e}");
             Vec::new()
         }
+        Msg::Toast(s) => {
+            model.show_toast(s);
+            Vec::new()
+        }
         Msg::ToastExpired => {
             // Only clear if actually expired: a newer toast raised in the meantime
             // has a later `shown_at` and must survive this stale timer.

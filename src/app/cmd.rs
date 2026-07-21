@@ -387,10 +387,10 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
             tokio::task::spawn_blocking(move || {
                 match services::git::fetch(&root) {
                     Ok(_) => {
-                        let _ = tx.send(Msg::Status("Fetched".to_string()));
+                        let _ = tx.send(Msg::Toast("Fetched".to_string()));
                     }
                     Err(e) => {
-                        let _ = tx.send(Msg::Error(format!("fetch failed: {}", first_line(&e))));
+                        let _ = tx.send(Msg::Toast(format!("fetch failed: {}", first_line(&e))));
                     }
                 }
                 send_git_status(&root, &tx);
@@ -400,10 +400,10 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
             tokio::task::spawn_blocking(move || {
                 match services::git::pull(&root) {
                     Ok(m) => {
-                        let _ = tx.send(Msg::Status(format!("Pulled: {}", first_line(&m))));
+                        let _ = tx.send(Msg::Toast(format!("Pulled: {}", first_line(&m))));
                     }
                     Err(e) => {
-                        let _ = tx.send(Msg::Error(format!("pull failed: {}", first_line(&e))));
+                        let _ = tx.send(Msg::Toast(format!("pull failed: {}", first_line(&e))));
                     }
                 }
                 send_git_status(&root, &tx);
@@ -413,10 +413,10 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
             tokio::task::spawn_blocking(move || {
                 match services::git::push(&root) {
                     Ok(_) => {
-                        let _ = tx.send(Msg::Status("Pushed".to_string()));
+                        let _ = tx.send(Msg::Toast("Pushed".to_string()));
                     }
                     Err(e) => {
-                        let _ = tx.send(Msg::Error(format!("push failed: {}", first_line(&e))));
+                        let _ = tx.send(Msg::Toast(format!("push failed: {}", first_line(&e))));
                     }
                 }
                 send_git_status(&root, &tx);

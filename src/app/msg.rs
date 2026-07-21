@@ -135,6 +135,8 @@ pub enum Msg {
     /// Neutral status bar message (without the "Error:" prefix).
     Status(String),
     Error(String),
+    /// Show a transient toast notification.
+    Toast(String),
     /// The toast duration elapsed: clear the toast if it is actually expired.
     ToastExpired,
 }

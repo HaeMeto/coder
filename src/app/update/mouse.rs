@@ -310,7 +310,7 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
                 Some(GitHit::Fetch) => {
                     model.focus = Focus::Sidebar;
                     if model.sidebar.git.has_remote {
-                        model.status_message = "Fetching…".to_string();
+                        model.show_toast("Fetching…");
                         vec![Cmd::GitFetch]
                     } else {
                         Vec::new()
@@ -320,7 +320,7 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
                     model.focus = Focus::Sidebar;
                     // Disabled without an upstream to pull from.
                     if model.sidebar.git.has_upstream {
-                        model.status_message = "Pulling…".to_string();
+                        model.show_toast("Pulling…");
                         vec![Cmd::GitPull]
                     } else {
                         Vec::new()
@@ -330,7 +330,7 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
                     model.focus = Focus::Sidebar;
                     // Disabled when there is nothing to push.
                     if model.sidebar.git.can_push() {
-                        model.status_message = "Pushing…".to_string();
+                        model.show_toast("Pushing…");
                         vec![Cmd::GitPush]
                     } else {
                         Vec::new()
