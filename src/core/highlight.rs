@@ -1,15 +1,12 @@
 //! syntect-based syntax highlighting; results are cached per buffer version.
 
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::sync::OnceLock;
 
 use ratatui::style::Color;
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{
-    Color as SynColor, ScopeSelectors, Style as SynStyle, StyleModifier, Theme as SynTheme,
-    ThemeItem, ThemeSet, ThemeSettings,
-};
+use syntect::highlighting::{Color as SynColor, Style as SynStyle, ThemeSet};
 use syntect::parsing::{SyntaxDefinition, SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
 
@@ -56,11 +53,18 @@ fn syntax_dirs() -> Vec<PathBuf> {
 fn theme_set() -> &'static ThemeSet {
     THEME_SET.get_or_init(|| {
         let mut ts = ThemeSet::load_defaults();
-        // Programmatically embedded popular themes.
-        for p in PALETTES {
-            ts.themes.insert(p.name.to_string(), build_theme(p));
+        // Popular full `.tmTheme` files compiled into the binary. These are the
+        // real Sublime Text themes (complete scope coverage), not approximations,
+        // so every listed theme is genuinely syntect-compatible.
+        for (name, src) in EMBEDDED_THEMES {
+            if let Ok(mut theme) = ThemeSet::load_from_reader(&mut Cursor::new(src.as_bytes())) {
+                // Key the picker entry off our chosen display name, not the file's
+                // internal one (e.g. Gruvbox ships as "gruvbox (Dark) (Medium)").
+                theme.name = Some((*name).to_string());
+                ts.themes.insert((*name).to_string(), theme);
+            }
         }
-        // .tmTheme files in user folders (silently skipped if absent).
+        // Extra user `.tmTheme` files in config folders (silently skipped if absent).
         for dir in theme_dirs() {
             let _ = ts.add_from_folder(&dir);
         }
@@ -81,103 +85,25 @@ fn theme_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// Embedded theme palette: background, foreground, selection + basic syntax scope colors (0xRRGGBB).
-struct Palette {
-    name: &'static str,
-    bg: u32,
-    fg: u32,
-    sel: u32,
-    comment: u32,
-    string: u32,
-    keyword: u32,
-    func: u32,
-    constant: u32,
-    type_: u32,
-}
-
-#[rustfmt::skip]
-static PALETTES: &[Palette] = &[
-    Palette { name: "Dracula",          bg: 0x282a36, fg: 0xf8f8f2, sel: 0x44475a, comment: 0x6272a4, string: 0xf1fa8c, keyword: 0xff79c6, func: 0x50fa7b, constant: 0xbd93f9, type_: 0x8be9fd },
-    Palette { name: "Gruvbox Dark",     bg: 0x282828, fg: 0xebdbb2, sel: 0x3c3836, comment: 0x928374, string: 0xb8bb26, keyword: 0xfb4934, func: 0xb8bb26, constant: 0xd3869b, type_: 0xfabd2f },
-    Palette { name: "Gruvbox Light",    bg: 0xfbf1c7, fg: 0x3c3836, sel: 0xebdbb2, comment: 0x928374, string: 0x79740e, keyword: 0x9d0006, func: 0x79740e, constant: 0x8f3f71, type_: 0xb57614 },
-    Palette { name: "Nord",             bg: 0x2e3440, fg: 0xd8dee9, sel: 0x434c5e, comment: 0x616e88, string: 0xa3be8c, keyword: 0x81a1c1, func: 0x88c0d0, constant: 0xb48ead, type_: 0x8fbcbb },
-    Palette { name: "One Dark",         bg: 0x282c34, fg: 0xabb2bf, sel: 0x3e4451, comment: 0x5c6370, string: 0x98c379, keyword: 0xc678dd, func: 0x61afef, constant: 0xd19a66, type_: 0xe5c07b },
-    Palette { name: "Monokai",          bg: 0x272822, fg: 0xf8f8f2, sel: 0x49483e, comment: 0x75715e, string: 0xe6db74, keyword: 0xf92672, func: 0xa6e22e, constant: 0xae81ff, type_: 0x66d9ef },
-    Palette { name: "Tokyo Night",      bg: 0x1a1b26, fg: 0xc0caf5, sel: 0x283457, comment: 0x565f89, string: 0x9ece6a, keyword: 0xbb9af7, func: 0x7aa2f7, constant: 0xff9e64, type_: 0x2ac3de },
-    Palette { name: "Catppuccin Mocha", bg: 0x1e1e2e, fg: 0xcdd6f4, sel: 0x313244, comment: 0x6c7086, string: 0xa6e3a1, keyword: 0xcba6f7, func: 0x89b4fa, constant: 0xfab387, type_: 0xf9e2af },
+/// Popular full Sublime Text `.tmTheme` files compiled into the binary, as
+/// `(display name, XML source)`. Unlike a hand-rolled palette these carry the
+/// theme's complete scope rules, so they highlight every token kind the real
+/// Sublime/bat versions do. Only genuinely syntect-loadable themes belong here
+/// — the picker must never list a theme that can't render (see `theme_set`).
+///
+/// `.tmTheme` (TextMate/Sublime XML plist) is the only theme format syntect
+/// understands; the newer `.sublime-color-scheme` JSON is not supported, so
+/// these are sourced from projects that still ship the XML form (bat's set).
+static EMBEDDED_THEMES: &[(&str, &str)] = &[
+    ("Dracula", include_str!("../../assets/themes/Dracula.tmTheme")),
+    ("Nord", include_str!("../../assets/themes/Nord.tmTheme")),
+    ("Monokai Extended", include_str!("../../assets/themes/Monokai Extended.tmTheme")),
+    ("One Dark", include_str!("../../assets/themes/One Dark.tmTheme")),
+    ("Gruvbox Dark", include_str!("../../assets/themes/Gruvbox Dark.tmTheme")),
+    ("Gruvbox Light", include_str!("../../assets/themes/Gruvbox Light.tmTheme")),
+    ("Catppuccin Mocha", include_str!("../../assets/themes/Catppuccin Mocha.tmTheme")),
+    ("Catppuccin Latte", include_str!("../../assets/themes/Catppuccin Latte.tmTheme")),
 ];
-
-fn hexc(v: u32) -> SynColor {
-    SynColor {
-        r: (v >> 16) as u8,
-        g: (v >> 8) as u8,
-        b: v as u8,
-        a: 0xFF,
-    }
-}
-
-fn scope_item(selector: &str, color: u32) -> ThemeItem {
-    ThemeItem {
-        scope: ScopeSelectors::from_str(selector).unwrap_or_default(),
-        style: StyleModifier {
-            foreground: Some(hexc(color)),
-            background: None,
-            font_style: None,
-        },
-    }
-}
-
-/// Builds a syntect theme from a palette (settings + basic scope rules).
-fn build_theme(p: &Palette) -> SynTheme {
-    let settings = ThemeSettings {
-        foreground: Some(hexc(p.fg)),
-        background: Some(hexc(p.bg)),
-        caret: Some(hexc(p.keyword)),
-        selection: Some(hexc(p.sel)),
-        line_highlight: Some(hexc(p.sel)),
-        gutter_foreground: Some(hexc(p.comment)),
-        ..Default::default()
-    };
-    // Broad scope coverage so hand-rolled palettes color as many token kinds as
-    // the full bundled themes (base16 etc.). syntect prefix-matches, so `keyword`
-    // already covers `keyword.operator.*`; the extra selectors below reach scopes
-    // that would otherwise fall back to plain foreground (e.g. Python `self`,
-    // escape sequences, base classes, decorators).
-    let scopes = vec![
-        scope_item("comment, punctuation.definition.comment", p.comment),
-        scope_item(
-            "string, string.quoted, string.template, constant.character.escape, punctuation.definition.string",
-            p.string,
-        ),
-        scope_item(
-            "constant.numeric, constant.language, constant.character, constant, support.constant",
-            p.constant,
-        ),
-        scope_item(
-            "keyword, storage.modifier, keyword.control, keyword.operator.word, keyword.operator.logical, variable.language",
-            p.keyword,
-        ),
-        scope_item(
-            "entity.name.function, support.function, meta.function-call, variable.function",
-            p.func,
-        ),
-        scope_item(
-            "entity.name.type, entity.name.class, entity.other.inherited-class, support.type, support.class, storage.type, entity.name.namespace",
-            p.type_,
-        ),
-        scope_item("entity.name.tag", p.keyword),
-        scope_item(
-            "entity.other.attribute-name, variable.annotation, meta.decorator",
-            p.type_,
-        ),
-    ];
-    SynTheme {
-        name: Some(p.name.to_string()),
-        author: Some("coder".to_string()),
-        settings,
-        scopes,
-    }
-}
 
 /// Default syntect theme used at application startup.
 pub const DEFAULT_THEME: &str = "base16-eighties.dark";
@@ -320,7 +246,12 @@ impl Highlighter {
             return &self.cache;
         }
         let ss = syntax_set();
-        let theme = &theme_set().themes[&self.theme_name];
+        let themes = &theme_set().themes;
+        // Fall back to the default theme if the configured name is unknown (e.g.
+        // a stale name in a hand-edited config) — indexing a missing key panics.
+        let theme = themes
+            .get(&self.theme_name)
+            .unwrap_or_else(|| &themes[DEFAULT_THEME]);
         let mut h = HighlightLines::new(self.syntax(), theme);
         let mut out: Vec<HlLine> = Vec::new();
         for line in LinesWithEndings::from(text) {
@@ -356,12 +287,23 @@ mod tests {
     #[test]
     fn builtin_themes_listed() {
         let names = theme_names();
-        // syntect defaults (7) + embedded palettes.
-        assert!(names.len() >= 7 + PALETTES.len());
-        for p in PALETTES {
-            assert!(names.iter().any(|n| n == p.name), "missing theme: {}", p.name);
+        // syntect defaults (7) + embedded full .tmTheme files.
+        assert!(names.len() >= 7 + EMBEDDED_THEMES.len());
+        for (name, _) in EMBEDDED_THEMES {
+            assert!(names.iter().any(|n| n == name), "missing theme: {name}");
         }
         assert!(names.iter().any(|n| n == DEFAULT_THEME));
+    }
+
+    #[test]
+    fn every_embedded_theme_loads() {
+        // Guards the "no incompatible theme in the list" contract: each bundled
+        // file must actually parse into a syntect theme, or it must not ship.
+        let ts = theme_set();
+        for (name, _) in EMBEDDED_THEMES {
+            let theme = ts.themes.get(*name).unwrap_or_else(|| panic!("did not load: {name}"));
+            assert!(theme.settings.background.is_some(), "no background: {name}");
+        }
     }
 
     #[test]
