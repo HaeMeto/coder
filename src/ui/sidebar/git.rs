@@ -600,9 +600,12 @@ pub fn git_hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<GitHit> {
     match kind {
         GitRowKind::Staged { idx, .. } => {
             let e = g.staged.get(*idx)?;
+            // The file_icon glyph is 1 col but reserves FILE_ICON_W (2), so the
+            // suffix ends one short of the right edge: rendered "  -" puts "-" at
+            // width-2, with width-1 left blank.
             if col < FILE_ICON_W {
                 Some(GitHit::OpenFile(e.rel.clone()))
-            } else if wide && col >= width - 3 {
+            } else if wide && col == width - 2 {
                 Some(GitHit::Unstage(e.rel.clone()))
             } else {
                 Some(GitHit::Entry(*idx))
@@ -612,12 +615,14 @@ pub fn git_hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<GitHit> {
         GitRowKind::UnstageAll => Some(GitHit::UnstageAll),
         GitRowKind::Unstaged { idx, .. } => {
             let e = g.unstaged.get(*idx)?;
-            // Leftmost columns: the file icon opens the plain file.
+            // Rendered suffix "↺ " + " " + "+" ends at width-2 (see Staged note):
+            // ↺ at width-5, its space width-4, gap width-3, "+" at width-2, width-1
+            // blank. Revert owns width-5..=width-4; the gap at width-3 is inert.
             if col < FILE_ICON_W {
                 Some(GitHit::OpenFile(e.rel.clone()))
-            } else if wide && col >= width - 2 {
+            } else if wide && col == width - 2 {
                 Some(GitHit::Stage(e.rel.clone()))
-            } else if wide && col >= width - 4 {
+            } else if wide && (col == width - 5 || col == width - 4) {
                 Some(GitHit::Revert(e.rel.clone()))
             } else {
                 Some(GitHit::Entry(g.staged.len() + *idx))

@@ -101,13 +101,13 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
     frame.render_widget(p, area);
 }
 
-/// The workspace-root row of the Files panel: the second inset row, directly
-/// below the "EXPLORER" title. Holds the root directory name and the root
-/// "new file"/"new folder" buttons.
+/// The workspace-root row of the Files panel: the row directly below the
+/// "EXPLORER" title. Holds the root directory name and the root "new file"/"new
+/// folder" buttons.
 fn header_row(area: Rect) -> Rect {
     let inner = content_rect(area);
     Rect {
-        y: inner.y + 2,
+        y: inner.y + 1,
         height: 1,
         ..inner
     }
@@ -159,10 +159,13 @@ pub fn files_header_hit(area: Rect, x: u16, y: u16) -> Option<FileHit> {
         return None;
     }
     let col = x.saturating_sub(row.x) as usize;
-    if col >= width - 2 {
+    // Render is "[file][ ][ ][folder][ ]" in the last 5 cols: the file glyph sits
+    // at width-ACTION_COLS, the folder glyph at width-2; the gap and trailing
+    // space between/after them are inert.
+    if col == width - 2 {
         return Some(FileHit::NewFolderRoot);
     }
-    if col >= width - ACTION_COLS {
+    if col == width - ACTION_COLS {
         return Some(FileHit::NewFileRoot);
     }
     None
@@ -206,10 +209,12 @@ pub fn file_hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<FileHit> {
     let col = x.saturating_sub(body.x) as usize;
 
     if row.is_dir && width >= MIN_ACTION_WIDTH {
-        if col >= width - 2 {
+        // Exact glyph columns only (mirrors `render`): file at width-ACTION_COLS,
+        // folder at width-2. Clicking the gap between them falls through to Row.
+        if col == width - 2 {
             return Some(FileHit::NewFolder(idx));
         }
-        if col >= width - ACTION_COLS {
+        if col == width - ACTION_COLS {
             return Some(FileHit::NewFile(idx));
         }
     }

@@ -7,6 +7,7 @@ mod extensions;
 mod files;
 mod git;
 mod search;
+mod settings;
 mod themes;
 
 use ratatui::Frame;
@@ -20,6 +21,7 @@ use crate::app::model::{Model, Panel};
 pub use files::{FileHit, file_hit, file_row_at, files_header_hit};
 pub use git::{GitHit, git_hit};
 pub use search::{SearchHit, search_hit};
+pub use settings::{SETTINGS_ITEMS, SettingsItem, settings_row_at};
 pub use themes::theme_row_at;
 
 /// Insets a rect by 1 cell on every side (the sidebar's inner padding). Render
@@ -34,8 +36,9 @@ pub(super) fn content_rect(area: Rect) -> Rect {
 }
 
 /// Rows reserved at the top of the inner sidebar area, above the panel body:
-/// the title row (0), a blank spacer (1), and the root/header-actions row (2).
-const HEADER_ROWS: u16 = 3;
+/// the title row (0) and the root/header-actions row (1). Panels without header
+/// actions (all but Files) simply leave row 1 blank.
+const HEADER_ROWS: u16 = 2;
 
 /// The region where a panel's body is drawn: the sidebar inset by 1 on every
 /// side (`content_rect`), minus `HEADER_ROWS` at the top. **This is the single
@@ -91,7 +94,6 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
         Panel::Git => git::render(frame, body, model),
         Panel::Extensions => extensions::render(frame, body, model),
         Panel::Themes => themes::render(frame, body, model),
-        // Settings has no sidebar body: the gear button opens config.toml as a tab.
-        Panel::Settings => {}
+        Panel::Settings => settings::render(frame, body, model),
     }
 }

@@ -73,6 +73,8 @@ fn dialog_confirm(model: &mut Model) -> Vec<Cmd> {
             model.dialog = None;
             close_tab(model, i)
         }
+        DialogAction::ResetKeybindings => reset_keybindings(model),
+        DialogAction::ResetConfig => reset_config(model),
         DialogAction::None => Vec::new(),
     }
 }

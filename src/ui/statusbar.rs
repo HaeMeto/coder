@@ -8,20 +8,6 @@ use ratatui::widgets::Paragraph;
 
 use crate::app::model::Model;
 
-/// The file-tree shortcut hints (`Ctrl+N New File · …`), shown only while the
-/// Files panel has focus. `None` in every other focus/panel.
-fn file_tree_hints(model: &Model) -> Option<String> {
-    use crate::app::model::{Focus, MenuItem, Panel};
-    if model.focus != Focus::Sidebar || model.sidebar.active != Panel::Files {
-        return None;
-    }
-    let hints: Vec<String> = MenuItem::ALL
-        .iter()
-        .map(|i| format!("{} {}", i.shortcut(), i.label()))
-        .collect();
-    Some(format!(" {} ", hints.join(" · ")))
-}
-
 pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
     let base = Style::new()
         .fg(model.theme.statusbar_fg)
@@ -31,12 +17,10 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
     if let Some(branch) = &model.sidebar.git.branch {
         left.push_str(&format!(" ⎇ {branch} "));
     }
-    // While navigating the file tree, the message area lists its shortcuts.
-    if let Some(hints) = file_tree_hints(model) {
-        left.push_str(&hints);
-    }
-    // A diagnostic under the cursor takes over the message area.
-    else if let Some(diag) = model.diagnostic_at_cursor() {
+    // A fixed pointer to the editable shortcuts file (Alt+7 opens it in the editor).
+    left.push_str(" Shortcuts: Alt+7 ");
+    // A diagnostic under the cursor takes over the rest of the message area.
+    if let Some(diag) = model.diagnostic_at_cursor() {
         let tag = match diag.severity {
             crate::services::lsp::Severity::Error => "error",
             crate::services::lsp::Severity::Warning => "warning",

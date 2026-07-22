@@ -51,6 +51,7 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
             Vec::new()
         }
         Action::SelectPanel(p) => select_panel(model, p),
+        Action::ShowShortcuts => open_keybindings(model),
         Action::Save => {
             // Read-only notice tabs (binary / unreadable) must never be written back.
             if model.active_notice().is_some() {
@@ -81,6 +82,10 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
                     Cmd::WriteFile { path, contents },
                     Cmd::CheckTools(model.extensions.tool_commands()),
                 ];
+            }
+            // Saving the keybindings file re-applies the shortcuts live.
+            if crate::services::keybindings::keybindings_path().as_deref() == Some(path.as_path()) {
+                model.keybindings = crate::services::keybindings::parse(&contents);
             }
             vec![Cmd::WriteFile { path, contents }]
         }

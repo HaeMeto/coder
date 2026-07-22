@@ -1,6 +1,7 @@
 pub mod clipboard;
 pub mod config;
 pub mod extensions;
+pub mod keybindings;
 pub mod fs;
 pub mod lsp;
 pub mod git;

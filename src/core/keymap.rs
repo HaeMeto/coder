@@ -3,6 +3,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::model::{Focus, Panel};
+use crate::services::keybindings::Keybindings;
 
 /// High-level action to be applied by `update`.
 pub enum Action {
@@ -35,6 +36,8 @@ pub enum Action {
     TriggerCompletion,
     /// Format the active buffer via its language server / formatter (Ctrl+Alt+F).
     Format,
+    /// Open the editable keybindings file in the editor (Alt+7).
+    ShowShortcuts,
 
     // Sidebar navigation
     NavUp,
@@ -79,42 +82,14 @@ pub enum Motion {
     WordRight,
 }
 
-pub fn resolve(key: KeyEvent, focus: Focus) -> Option<Action> {
+pub fn resolve(keys: &Keybindings, key: KeyEvent, focus: Focus) -> Option<Action> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
-    // ----- Global shortcuts (in any focus) -----
-    if ctrl {
-        match key.code {
-            KeyCode::Char('q') => return Some(Action::Quit),
-            KeyCode::Char('b') => return Some(Action::ToggleSidebar),
-            KeyCode::Char('j') => return Some(Action::ToggleTerminal),
-            KeyCode::Char('w') => return Some(Action::CloseTab),
-            KeyCode::Char('s') => return Some(Action::Save),
-            KeyCode::Char('e') if shift => return Some(Action::SelectPanel(Panel::Files)),
-            KeyCode::Char('f') if shift => return Some(Action::SelectPanel(Panel::Search)),
-            KeyCode::Char('g') if shift => return Some(Action::SelectPanel(Panel::Git)),
-            KeyCode::Char('x') if shift => return Some(Action::SelectPanel(Panel::Extensions)),
-            // Ctrl+F: in-editor find. (Ctrl+Shift+F above is the workspace search panel.)
-            KeyCode::Char('f') => return Some(Action::OpenFind),
-            KeyCode::Char('h') => return Some(Action::OpenFindReplace),
-            KeyCode::Char(',') => return Some(Action::SelectPanel(Panel::Settings)),
-            KeyCode::Tab => {
-                return Some(if shift {
-                    Action::PrevTab
-                } else {
-                    Action::NextTab
-                });
-            }
-            _ => {}
-        }
-    }
-
-    // F2 renames the selected file-tree row from any focus (the handler ignores
-    // it unless the Files panel is active). Lets rename work right after a file
-    // is opened by mouse click, which moves focus to the editor.
-    if key.code == KeyCode::F(2) {
-        return Some(Action::RenameEntry);
+    // User-editable command shortcuts (quit, save, copy, new file, …) win first.
+    // Whatever they don't claim falls through to the fixed typing/motion below.
+    if let Some(action) = keys.resolve(key, focus) {
+        return Some(action);
     }
 
     match focus {
@@ -151,31 +126,15 @@ fn resolve_git_commit(key: KeyEvent) -> Option<Action> {
 }
 
 fn resolve_editor(key: KeyEvent, ctrl: bool, shift: bool) -> Option<Action> {
-    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    // Command shortcuts (copy/cut/paste/undo/format/move-line/…) are handled by
+    // the user keybindings before we get here. What remains is the fixed set:
+    // Ctrl+Left/Right word motion, plus typing / cursor motion / structural keys.
     if ctrl {
         return match key.code {
-            KeyCode::Char('c') => Some(Action::Copy),
-            KeyCode::Char('x') => Some(Action::Cut),
-            KeyCode::Char('v') => Some(Action::Paste),
-            KeyCode::Char('z') => Some(Action::Undo),
-            KeyCode::Char('y') => Some(Action::Redo),
-            KeyCode::Char('a') => Some(Action::SelectAll),
-            // Ctrl+Space: request completions; Ctrl+Alt+F: format the buffer.
-            KeyCode::Char(' ') => Some(Action::TriggerCompletion),
-            KeyCode::Char('f') if alt => Some(Action::Format),
-            // Ctrl+Left/Right: jump by word (Shift extends the selection).
             KeyCode::Left => Some(Action::Move(Motion::WordLeft, shift)),
             KeyCode::Right => Some(Action::Move(Motion::WordRight, shift)),
             _ => None,
         };
-    }
-    // Alt+Up / Alt+Down: shift the current line (or selected block) vertically.
-    if alt {
-        match key.code {
-            KeyCode::Up => return Some(Action::MoveLineUp),
-            KeyCode::Down => return Some(Action::MoveLineDown),
-            _ => {}
-        }
     }
     match key.code {
         KeyCode::Char(c) => Some(Action::Insert(c)),
@@ -196,19 +155,10 @@ fn resolve_editor(key: KeyEvent, ctrl: bool, shift: bool) -> Option<Action> {
     }
 }
 
-fn resolve_sidebar(key: KeyEvent, ctrl: bool, shift: bool) -> Option<Action> {
-    // File-tree entry management. Ctrl+N / Ctrl+Shift+N create next to the
-    // selected row; the Files panel ignores them elsewhere.
-    if ctrl {
-        return match key.code {
-            KeyCode::Char('n' | 'N') if shift => Some(Action::NewFolder),
-            KeyCode::Char('n' | 'N') => Some(Action::NewFile),
-            _ => None,
-        };
-    }
+fn resolve_sidebar(key: KeyEvent, _ctrl: bool, _shift: bool) -> Option<Action> {
+    // Entry management (new file/folder, delete, rename) is handled by the user
+    // keybindings; only the fixed tree navigation keys remain here.
     match key.code {
-        // F2 (rename) is a global shortcut handled in `resolve`.
-        KeyCode::Delete => Some(Action::DeleteEntry),
         KeyCode::Up => Some(Action::NavUp),
         KeyCode::Down => Some(Action::NavDown),
         KeyCode::Enter | KeyCode::Right => Some(Action::Activate),

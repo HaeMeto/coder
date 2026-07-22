@@ -296,6 +296,8 @@ pub struct Sidebar {
     pub search: SearchState,
     pub themes: ThemesState,
     pub settings: SettingsState,
+    /// Selected row in the Settings panel (index into its action list).
+    pub settings_selected: usize,
 }
 
 /// General-purpose modal dialog kind.
@@ -329,6 +331,10 @@ pub enum DialogAction {
     Delete(PathBuf),
     /// Close the tab at the given index (user confirmed the dirty-tab dialog).
     CloseTab(usize, String),
+    /// Overwrite `keybindings.toml` with the built-in defaults.
+    ResetKeybindings,
+    /// Overwrite `config.toml` with the seeded defaults.
+    ResetConfig,
 }
 
 /// Modal dialog opened in the center of the screen. Captures all input while open.
@@ -604,6 +610,8 @@ pub struct Model {
     pub layout: LayoutState,
     pub focus: Focus,
     pub should_quit: bool,
+    /// User-editable keyboard shortcuts (loaded from `keybindings.toml`).
+    pub keybindings: crate::services::keybindings::Keybindings,
     pub internal_clipboard: String,
     pub theme: Theme,
     /// Last known terminal size — for mouse hit-testing and layout.
@@ -691,6 +699,7 @@ impl Model {
 
     fn with_defaults(root: PathBuf) -> Self {
         Model {
+            keybindings: crate::services::keybindings::load(),
             sidebar: Sidebar {
                 active: Panel::Files,
                 files: FileTree::new(root.clone()),
@@ -698,6 +707,7 @@ impl Model {
                 search: SearchState::default(),
                 themes: ThemesState::default(),
                 settings: SettingsState::default(),
+                settings_selected: 0,
             },
             tabs: Vec::new(),
             active_tab: None,

@@ -12,7 +12,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Clear, Paragraph};
 
 use crate::app::model::{FindField, Focus, Model};
 use crate::ui::text_input::TextInput;
@@ -169,7 +169,10 @@ pub fn render(frame: &mut Frame, editor: Rect, model: &Model) {
     let focused = model.focus == Focus::Find;
     let ascii = model.ascii_icons;
 
-    // Widget background.
+    // Widget background. Clear first to wipe the editor glyphs underneath —
+    // a styled Paragraph only recolors cells, it doesn't blank their symbols,
+    // so without Clear the text behind shows through the empty parts.
+    frame.render_widget(Clear, l.area);
     frame.render_widget(
         Paragraph::new("").style(Style::new().bg(th.bg_alt)),
         l.area,

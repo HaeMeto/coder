@@ -3,11 +3,6 @@
 use super::*;
 
 pub(super) fn select_panel(model: &mut Model, p: Panel) -> Vec<Cmd> {
-    // The gear "panel" is an action, not a sidebar view: it opens config.toml in
-    // the editor so settings + languages can be hand-edited.
-    if p == Panel::Settings {
-        return open_config(model);
-    }
     // Clicking the already-active panel toggles the sidebar shut; clicking a
     // different panel (or the same one while collapsed) opens it on that panel.
     if model.layout.sidebar_open && model.sidebar.active == p {
@@ -132,6 +127,104 @@ pub(super) fn open_config(model: &mut Model) -> Vec<Cmd> {
         crate::services::config::save(&model.config_snapshot());
     }
     open_path(model, path)
+}
+
+/// Opens the keybindings file as an editor tab, seeding it with the current
+/// shortcuts first if it doesn't exist yet. Bound to Alt+7 ("Shortcuts").
+pub(super) fn open_keybindings(model: &mut Model) -> Vec<Cmd> {
+    let Some(path) = crate::services::keybindings::keybindings_path() else {
+        model.notify("No config path available".to_string());
+        return Vec::new();
+    };
+    if !path.exists() {
+        crate::services::keybindings::save(&model.keybindings);
+    }
+    open_path(model, path)
+}
+
+/// Runs the Settings panel's selected row: reset actions open a confirmation
+/// dialog; the edit rows open the file in the editor. Shared by keyboard Enter
+/// and mouse click.
+pub(super) fn activate_settings(model: &mut Model) -> Vec<Cmd> {
+    let Some(&item) = crate::ui::sidebar::SETTINGS_ITEMS.get(model.sidebar.settings_selected) else {
+        return Vec::new();
+    };
+    use crate::ui::sidebar::SettingsItem;
+    match item {
+        SettingsItem::ResetKeybindings => {
+            model.dialog = Some(Dialog::ask(
+                "Reset keybindings".to_string(),
+                "All shortcuts will be restored to their defaults, discarding your \
+                 customizations. Are you sure?"
+                    .to_string(),
+                DialogAction::ResetKeybindings,
+            ));
+            Vec::new()
+        }
+        SettingsItem::ResetConfig => {
+            model.dialog = Some(Dialog::ask(
+                "Reset config".to_string(),
+                "Theme, editor settings and language tooling will be restored to their \
+                 defaults, discarding your customizations. Are you sure?"
+                    .to_string(),
+                DialogAction::ResetConfig,
+            ));
+            Vec::new()
+        }
+        SettingsItem::EditKeybindings => open_keybindings(model),
+        SettingsItem::EditConfig => open_config(model),
+    }
+}
+
+/// Restores the built-in keybindings, overwriting `keybindings.toml`, and syncs
+/// the open tab (if any) even if it has unsaved edits — reset discards them.
+pub(super) fn reset_keybindings(model: &mut Model) -> Vec<Cmd> {
+    model.keybindings = crate::services::keybindings::Keybindings::default();
+    let Some(path) = crate::services::keybindings::keybindings_path() else {
+        model.notify("No config path available".to_string());
+        return Vec::new();
+    };
+    let contents = crate::services::keybindings::to_toml(&model.keybindings);
+    force_replace_open_buffer(model, &path, &contents);
+    model.notify("Keybindings reset to defaults".to_string());
+    vec![Cmd::WriteFile { path, contents }]
+}
+
+/// Restores the seeded config (theme, editor settings, starter languages),
+/// re-applies it live, overwrites `config.toml`, and syncs the open tab.
+pub(super) fn reset_config(model: &mut Model) -> Vec<Cmd> {
+    let cfg = crate::services::config::seed();
+    model.apply_config(&cfg);
+    let Some(path) = crate::services::config::config_path() else {
+        model.notify("No config path available".to_string());
+        return Vec::new();
+    };
+    let contents = crate::services::config::to_toml(&cfg);
+    force_replace_open_buffer(model, &path, &contents);
+    model.notify("Config reset to defaults".to_string());
+    vec![
+        Cmd::WriteFile { path, contents },
+        Cmd::CheckTools(model.extensions.tool_commands()),
+    ]
+}
+
+/// Replaces the buffer of any open tab for `path` with `text`, unconditionally
+/// (unlike `apply_reload`, which preserves unsaved edits). Marks it saved so the
+/// subsequent watcher event is a no-op.
+fn force_replace_open_buffer(model: &mut Model, path: &std::path::Path, text: &str) {
+    let target = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    for i in 0..model.tabs.len() {
+        if !buf_path_eq(&model.tabs[i].buffer.path, &target) {
+            continue;
+        }
+        let keep_path = model.tabs[i].buffer.path.clone();
+        model.tabs[i].buffer = Buffer::new(keep_path, text);
+        model.tabs[i].highlighter.invalidate();
+        model.tabs[i].buffer.mark_saved();
+        if model.active_tab == Some(i) {
+            model.invalidate_highlight();
+        }
+    }
 }
 
 /// Compares an open buffer's path to a canonicalized disk path.

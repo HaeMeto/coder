@@ -22,8 +22,13 @@ pub(super) fn nav(model: &mut Model, delta: isize) {
             let sel = move_index(model.sidebar.themes.selected, delta, len);
             model.apply_theme(sel); // live theme change with the arrow keys
         }
-        // Settings has no sidebar list (opens config.toml as a tab instead).
-        Panel::Settings | Panel::Extensions => {}
+        Panel::Settings => {
+            let len = ui::sidebar::SETTINGS_ITEMS.len();
+            model.sidebar.settings_selected =
+                move_index(model.sidebar.settings_selected, delta, len);
+        }
+        // Extensions has no sidebar list to navigate.
+        Panel::Extensions => {}
     }
 }
 
@@ -82,9 +87,9 @@ pub(super) fn activate_selection(model: &mut Model) -> Vec<Cmd> {
             model.apply_theme(model.sidebar.themes.selected);
             persist_config(model)
         }
-        // The gear opens config.toml (handled in `select_panel`); Enter/click on
-        // these panels does nothing here.
-        Panel::Settings | Panel::Extensions => Vec::new(),
+        Panel::Settings => activate_settings(model),
+        // Extensions has no activatable rows.
+        Panel::Extensions => Vec::new(),
     }
 }
 

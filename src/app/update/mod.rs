@@ -78,7 +78,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                     }
                 }
             }
-            if let Some(action) = keymap::resolve(key, model.focus) {
+            if let Some(action) = keymap::resolve(&model.keybindings, key, model.focus) {
                 return apply_action(model, action);
             }
             Vec::new()
