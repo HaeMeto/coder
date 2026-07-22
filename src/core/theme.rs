@@ -24,6 +24,10 @@ pub struct Theme {
     pub diff_add_bg: Color,
     /// Subtle line background for removed lines (diff view in the editor).
     pub diff_del_bg: Color,
+    /// Background of every in-editor find match (yellow).
+    pub find_match: Color,
+    /// Background of the active find match (blue).
+    pub find_current: Color,
 }
 
 /// Scales each RGB channel by `f`, clamped to 0..=255 (non-RGB colors pass through).
@@ -73,6 +77,8 @@ impl Default for Theme {
             git_untracked: Color::Rgb(115, 201, 145),
             diff_add_bg: Color::Rgb(32, 51, 37),
             diff_del_bg: Color::Rgb(60, 34, 34),
+            find_match: Color::Rgb(138, 114, 0),
+            find_current: Color::Rgb(21, 94, 170),
         }
     }
 }

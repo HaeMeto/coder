@@ -106,6 +106,10 @@ async fn run(
     root: std::path::PathBuf,
     open_file: Option<std::path::PathBuf>,
 ) -> Result<()> {
+    // Build the syntax/theme sets on a background thread so the first file open
+    // doesn't pay the ~500ms deserialization cost on the render path.
+    std::thread::spawn(crate::core::highlight::warm);
+
     let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
     let mut model = Model::new(root.clone());
 
