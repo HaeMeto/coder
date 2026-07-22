@@ -22,6 +22,9 @@ pub enum Action {
     Backspace,
     Delete,
     Move(Motion, bool), // (direction, extend selection)
+    /// Alt+Up / Alt+Down: move the current line (or selected lines) up/down.
+    MoveLineUp,
+    MoveLineDown,
     SelectAll,
     Copy,
     Cut,
@@ -165,6 +168,14 @@ fn resolve_editor(key: KeyEvent, ctrl: bool, shift: bool) -> Option<Action> {
             KeyCode::Right => Some(Action::Move(Motion::WordRight, shift)),
             _ => None,
         };
+    }
+    // Alt+Up / Alt+Down: shift the current line (or selected block) vertically.
+    if alt {
+        match key.code {
+            KeyCode::Up => return Some(Action::MoveLineUp),
+            KeyCode::Down => return Some(Action::MoveLineDown),
+            _ => {}
+        }
     }
     match key.code {
         KeyCode::Char(c) => Some(Action::Insert(c)),

@@ -252,9 +252,16 @@ impl Buffer {
         }
     }
 
+    /// Smart Home: jumps to the first non-whitespace character. If already there
+    /// (or the line has no indent), toggles to column 0.
     pub fn move_home(&mut self, extend: bool) {
         self.pre_move(extend);
-        self.cursor.col = 0;
+        let first: usize = self
+            .line_text(self.cursor.line)
+            .chars()
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .count();
+        self.cursor.col = if self.cursor.col == first { 0 } else { first };
     }
 
     pub fn move_end(&mut self, extend: bool) {
@@ -450,6 +457,94 @@ impl Buffer {
         self.insert_str(&format!("\n{indent}"));
     }
 
+    /// Inserts pasted text, re-indenting the continuation lines so the block
+    /// aligns to the cursor's current indentation instead of keeping whatever
+    /// (often deeper) leading whitespace it was copied with. Single-line pastes
+    /// insert verbatim.
+    pub fn insert_paste(&mut self, text: &str) {
+        if !text.contains('\n') {
+            self.insert_str(text);
+            return;
+        }
+        // Drop the selection first so the base indent is read from the line the
+        // paste actually lands on.
+        self.delete_selection_internal();
+        let base = self.indent_at_cursor();
+        let reindented = reindent_paste(text, &base);
+        self.insert_str(&reindented);
+    }
+
+    /// Moves the line(s) touched by the selection (or just the cursor line) up
+    /// (`delta < 0`) or down (`delta > 0`) by one, carrying the cursor and
+    /// selection with them. Recorded as a single undo step.
+    pub fn move_lines(&mut self, delta: isize) {
+        if delta == 0 {
+            return;
+        }
+        let last = self.line_count().saturating_sub(1);
+        let (sel_start, sel_end) = self.selection_range().unwrap_or((self.cursor, self.cursor));
+        let start = sel_start.line;
+        // A selection ending at column 0 doesn't visually include that last line.
+        let end = if sel_end.line > start && sel_end.col == 0 {
+            sel_end.line - 1
+        } else {
+            sel_end.line
+        };
+        if delta < 0 && start == 0 {
+            return;
+        }
+        if delta > 0 && end >= last {
+            return;
+        }
+
+        // Region of physical lines to rewrite, and their new order.
+        let (region_start_line, region_end_line, order): (usize, usize, Vec<usize>) = if delta < 0 {
+            (start - 1, end, (start..=end).chain(std::iter::once(start - 1)).collect())
+        } else {
+            (start, end + 1, std::iter::once(end + 1).chain(start..=end).collect())
+        };
+
+        let region_start = self.rope.line_to_char(region_start_line);
+        let region_end = if region_end_line + 1 < self.rope.len_lines() {
+            self.rope.line_to_char(region_end_line + 1)
+        } else {
+            self.rope.len_chars()
+        };
+        let old = self.rope.slice(region_start..region_end).to_string();
+        let trailing_newline = old.ends_with('\n');
+
+        let mut new_text = String::new();
+        for (i, &ln) in order.iter().enumerate() {
+            if i > 0 {
+                new_text.push('\n');
+            }
+            new_text.push_str(&self.line_text(ln));
+        }
+        if trailing_newline {
+            new_text.push('\n');
+        }
+
+        let cursor_before = self.cursor;
+        self.rope.remove(region_start..region_end);
+        self.rope.insert(region_start, &new_text);
+
+        // Cursor and selection ride along with the block by one line.
+        self.cursor.line = (self.cursor.line as isize + delta) as usize;
+        if let Some(a) = self.anchor.as_mut() {
+            a.line = (a.line as isize + delta) as usize;
+        }
+
+        self.push_edit(Edit {
+            char_idx: region_start,
+            before: old,
+            after: new_text,
+            cursor_before,
+            cursor_after: self.cursor,
+            stamp: Instant::now(),
+            typing: false,
+        });
+    }
+
     pub fn backspace(&mut self) {
         if self.delete_selection_internal() {
             return;
@@ -624,6 +719,44 @@ impl Buffer {
     }
 }
 
+/// Number of leading space/tab characters on a line.
+fn leading_ws(line: &str) -> usize {
+    line.chars().take_while(|c| *c == ' ' || *c == '\t').count()
+}
+
+/// Re-indents a multi-line paste. The first line is left verbatim (the cursor
+/// already supplies its indent). Every continuation line has the block's shared
+/// minimum indentation stripped and `base` — the indentation of the line the
+/// paste lands on — prefixed instead. Blank lines stay empty.
+fn reindent_paste(text: &str, base: &str) -> String {
+    let lines: Vec<&str> = text.split('\n').collect();
+    // Shared indentation is measured across the continuation lines only; the
+    // first line often has none (selection started mid-line) and would wrongly
+    // pin the minimum to zero.
+    let common = lines
+        .iter()
+        .skip(1)
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| leading_ws(l))
+        .min()
+        .unwrap_or(0);
+    let mut out = String::new();
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        if i == 0 {
+            out.push_str(line); // verbatim
+        } else if line.trim().is_empty() {
+            continue; // keep blank lines empty (no trailing indent)
+        } else {
+            out.push_str(base);
+            out.extend(line.chars().skip(common)); // drop shared indent
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -786,6 +919,92 @@ mod tests {
         // Shift extends: anchor stays put.
         b.move_word_right(true);
         assert_eq!(b.selected_text().as_deref(), Some("bar_baz"));
+    }
+
+    #[test]
+    fn smart_home_toggles() {
+        let mut b = Buffer::new(None, "    foo");
+        b.cursor = Cursor { line: 0, col: 7 }; // end of line
+        b.move_home(false); // -> first non-ws
+        assert_eq!(b.cursor.col, 4);
+        b.move_home(false); // already there -> column 0
+        assert_eq!(b.cursor.col, 0);
+        b.move_home(false); // back to first non-ws
+        assert_eq!(b.cursor.col, 4);
+        // A line without indent just goes to 0.
+        let mut b2 = Buffer::new(None, "bar");
+        b2.cursor = Cursor { line: 0, col: 2 };
+        b2.move_home(false);
+        assert_eq!(b2.cursor.col, 0);
+    }
+
+    #[test]
+    fn move_line_down_and_up() {
+        let mut b = Buffer::new(None, "a\nb\nc");
+        b.cursor = Cursor { line: 0, col: 0 }; // on "a"
+        b.move_lines(1);
+        assert_eq!(b.full_text(), "b\na\nc");
+        assert_eq!(b.cursor.line, 1); // cursor followed the line
+        b.move_lines(-1);
+        assert_eq!(b.full_text(), "a\nb\nc");
+        assert_eq!(b.cursor.line, 0);
+    }
+
+    #[test]
+    fn move_line_edges_are_noops() {
+        let mut b = Buffer::new(None, "a\nb");
+        b.cursor = Cursor { line: 0, col: 0 };
+        b.move_lines(-1); // already at top
+        assert_eq!(b.full_text(), "a\nb");
+        b.cursor = Cursor { line: 1, col: 0 };
+        b.move_lines(1); // already at bottom
+        assert_eq!(b.full_text(), "a\nb");
+    }
+
+    #[test]
+    fn move_line_undoes_as_one_step() {
+        let mut b = Buffer::new(None, "a\nb\nc");
+        b.cursor = Cursor { line: 1, col: 0 };
+        b.move_lines(1);
+        assert_eq!(b.full_text(), "a\nc\nb");
+        b.undo();
+        assert_eq!(b.full_text(), "a\nb\nc");
+    }
+
+    #[test]
+    fn move_selected_block() {
+        let mut b = Buffer::new(None, "a\nb\nc\nd");
+        // Select lines "a" and "b" (anchor on line 0, cursor at start of line 2).
+        b.anchor = Some(Cursor { line: 0, col: 0 });
+        b.cursor = Cursor { line: 2, col: 0 };
+        b.move_lines(1);
+        // Trailing col-0 line (2) is excluded; only a,b move down past c.
+        assert_eq!(b.full_text(), "c\na\nb\nd");
+    }
+
+    #[test]
+    fn paste_reindents_block_to_cursor() {
+        // Pasting a block copied at 8-space indent onto a 4-space line.
+        let mut b = Buffer::new(None, "    ");
+        b.cursor = Cursor { line: 0, col: 4 }; // after the 4-space indent
+        b.insert_paste("foo();\n        bar();\n        baz();");
+        assert_eq!(b.full_text(), "    foo();\n    bar();\n    baz();");
+    }
+
+    #[test]
+    fn paste_single_line_is_verbatim() {
+        let mut b = Buffer::new(None, "    ");
+        b.cursor = Cursor { line: 0, col: 4 };
+        b.insert_paste("    x");
+        assert_eq!(b.full_text(), "        x");
+    }
+
+    #[test]
+    fn paste_keeps_blank_lines_empty() {
+        let mut b = Buffer::new(None, "  ");
+        b.cursor = Cursor { line: 0, col: 2 };
+        b.insert_paste("a\n\n    b");
+        assert_eq!(b.full_text(), "  a\n\n  b");
     }
 
     #[test]

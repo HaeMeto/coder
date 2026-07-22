@@ -123,6 +123,8 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
             let (h, _) = editor_viewport(model);
             edit(model, |b| apply_motion(b, motion, extend, h))
         }
+        Action::MoveLineUp => edit(model, |b| b.move_lines(-1)),
+        Action::MoveLineDown => edit(model, |b| b.move_lines(1)),
         Action::Copy => {
             if let Some(buf) = model.active_buffer()
                 && let Some(sel) = buf.selected_text() {
@@ -148,7 +150,7 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         Action::Paste => {
             let text = read_clipboard(model);
             if !text.is_empty() {
-                return edit(model, |b| b.insert_str(&text));
+                return edit(model, |b| b.insert_paste(&text));
             }
             Vec::new()
         }
