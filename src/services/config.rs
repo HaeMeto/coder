@@ -31,11 +31,12 @@ use toml::Value;
 use crate::core::highlight::DEFAULT_THEME;
 
 /// Top-level keys that are editor settings, not language sections.
-const SETTING_KEYS: [&str; 4] = [
+const SETTING_KEYS: [&str; 5] = [
     "theme",
     "format_on_save",
     "trim_trailing_whitespace",
     "insert_final_newline",
+    "inline_diagnostics",
 ];
 
 /// A single language's tooling, as written in its `[<name>]` section. The
@@ -64,6 +65,9 @@ pub struct Config {
     pub trim_trailing_whitespace: bool,
     /// Ensure a single final newline on save.
     pub insert_final_newline: bool,
+    /// Append LSP error/warning messages at the end of their line, colored by
+    /// severity (red/yellow).
+    pub inline_diagnostics: bool,
     /// Language tooling, keyed by language name (the `[<name>]` section).
     pub languages: BTreeMap<String, LanguageConfig>,
 }
@@ -75,6 +79,7 @@ impl Default for Config {
             format_on_save: false,
             trim_trailing_whitespace: true,
             insert_final_newline: true,
+            inline_diagnostics: true,
             // No languages by default; they live in the file (see `seed`).
             languages: BTreeMap::new(),
         }
@@ -137,6 +142,9 @@ pub fn parse(text: &str) -> Config {
     if let Some(v) = table.get("insert_final_newline").and_then(Value::as_bool) {
         cfg.insert_final_newline = v;
     }
+    if let Some(v) = table.get("inline_diagnostics").and_then(Value::as_bool) {
+        cfg.inline_diagnostics = v;
+    }
     for (key, value) in &table {
         if SETTING_KEYS.contains(&key.as_str()) {
             continue;
@@ -181,6 +189,10 @@ pub fn to_toml(config: &Config) -> String {
     table.insert(
         "insert_final_newline".into(),
         Value::Boolean(config.insert_final_newline),
+    );
+    table.insert(
+        "inline_diagnostics".into(),
+        Value::Boolean(config.inline_diagnostics),
     );
     for (name, lang) in &config.languages {
         if let Ok(v) = Value::try_from(lang) {

@@ -9,9 +9,7 @@ mod ui;
 use std::io::{self, Stdout};
 
 use anyhow::Result;
-use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyEventKind,
-};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -60,10 +58,7 @@ async fn main() -> Result<()> {
                 (p, None)
             }
         }
-        None => (
-            std::env::current_dir().unwrap_or_else(|_| ".".into()),
-            None,
-        ),
+        None => (std::env::current_dir().unwrap_or_else(|_| ".".into()), None),
     };
     let root = root.canonicalize().unwrap_or(root);
 

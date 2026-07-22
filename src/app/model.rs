@@ -77,6 +77,8 @@ pub struct SettingsState {
     pub trim_trailing_whitespace: bool,
     /// Ensure the file ends with a single newline on save (when format_on_save).
     pub insert_final_newline: bool,
+    /// Show LSP error/warning messages inline at the end of their line.
+    pub inline_diagnostics: bool,
 }
 
 impl Default for SettingsState {
@@ -85,6 +87,7 @@ impl Default for SettingsState {
             format_on_save: false,
             trim_trailing_whitespace: true,
             insert_final_newline: true,
+            inline_diagnostics: true,
         }
     }
 }
@@ -902,6 +905,7 @@ impl Model {
         s.format_on_save = config.format_on_save;
         s.trim_trailing_whitespace = config.trim_trailing_whitespace;
         s.insert_final_newline = config.insert_final_newline;
+        s.inline_diagnostics = config.inline_diagnostics;
         self.extensions =
             crate::services::extensions::ExtensionRegistry::from_config(&config.languages);
     }
@@ -914,6 +918,7 @@ impl Model {
             format_on_save: s.format_on_save,
             trim_trailing_whitespace: s.trim_trailing_whitespace,
             insert_final_newline: s.insert_final_newline,
+            inline_diagnostics: s.inline_diagnostics,
             languages: self.extensions.to_language_configs(),
         }
     }

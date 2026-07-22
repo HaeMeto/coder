@@ -59,17 +59,18 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
         .and_then(|p| model.diagnostics.get(p))
         .map(|v| v.as_slice())
         .unwrap_or(&[]);
-    // Most-severe diagnostic per line, for coloring the line number.
-    let mut sev_by_line: std::collections::HashMap<usize, Severity> = std::collections::HashMap::new();
+    // Most-severe diagnostic per line: colors the line number, and (when
+    // `inline_diagnostics` is on) its message trails the line.
+    let mut best_by_line: std::collections::HashMap<usize, &Diagnostic> = std::collections::HashMap::new();
     for d in diags {
-        sev_by_line
+        best_by_line
             .entry(d.line)
-            .and_modify(|s| {
-                if severity_rank(d.severity) < severity_rank(*s) {
-                    *s = d.severity;
+            .and_modify(|cur| {
+                if severity_rank(d.severity) < severity_rank(cur.severity) {
+                    *cur = d;
                 }
             })
-            .or_insert(d.severity);
+            .or_insert(d);
     }
 
     let mut lines: Vec<Line> = Vec::with_capacity(height);
@@ -80,8 +81,8 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
                 let row = *row;
                 let is_cursor_line = row == buf.cursor.line;
                 // A diagnostic on this line recolors its line number by severity.
-                let ln_style = if let Some(sev) = sev_by_line.get(&row) {
-                    Style::new().fg(severity_color(&model.theme, *sev))
+                let ln_style = if let Some(d) = best_by_line.get(&row) {
+                    Style::new().fg(severity_color(&model.theme, d.severity))
                 } else if is_cursor_line {
                     Style::new().fg(model.theme.fg)
                 } else {
@@ -105,6 +106,26 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
                 // Highlighted text pieces (clipped by scroll_x).
                 let hl_line = model.active_hl.get(row);
                 append_text_spans(&mut spans, hl_line, buf, row, scroll_x, text_w, model);
+
+                // Inline diagnostics: trail the line with the most-severe
+                // error/warning message, colored by severity (red/yellow).
+                if model.sidebar.settings.inline_diagnostics
+                    && let Some(d) = best_by_line.get(&row)
+                    && matches!(d.severity, Severity::Error | Severity::Warning)
+                {
+                    let msg = d.message.lines().next().unwrap_or("");
+                    if !msg.is_empty() {
+                        // Only the message gets the severity background; the gap
+                        // before it stays on the editor background. The bg is a
+                        // translucent tint (like git diff rows), text stays bright.
+                        let color = severity_color(&model.theme, d.severity);
+                        spans.push(Span::raw("  "));
+                        spans.push(Span::styled(
+                            format!(" {msg} "),
+                            Style::new().fg(color).bg(model.theme.tint(color, 0.22)),
+                        ));
+                    }
+                }
 
                 let mut line = Line::from(spans);
                 // Only diff-mode changed lines get a background; the cursor line is not filled.
