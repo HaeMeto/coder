@@ -2,7 +2,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -44,9 +44,15 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
             crate::services::lsp::Severity::Hint => "hint",
         };
         left.push_str(&format!(" {tag}: {} ", diag.message.replace('\n', " ")));
-    } else {
-        left.push_str(&format!(" {} ", model.status_message));
     }
+
+    // Error/warning counts for the active file — always shown, colored by severity.
+    use crate::services::lsp::Severity;
+    let (errors, warnings) = model.active_diagnostic_counts();
+    let err_icon = crate::ui::editor::severity_icon(Severity::Error, model.ascii_icons);
+    let warn_icon = crate::ui::editor::severity_icon(Severity::Warning, model.ascii_icons);
+    let err_seg = format!(" {err_icon} {errors}  ");
+    let warn_seg = format!("{warn_icon} {warnings}  ");
 
     let mut right = String::new();
     if let Some(buf) = model.active_buffer() {
@@ -74,15 +80,29 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
     right.push(' ');
 
     let total = area.width as usize;
-    let rw = right.chars().count();
-    // The right block (cursor position, focus) always wins the space it needs;
-    // the message/hints are cut to whatever is left.
+    let rw = err_seg.chars().count() + warn_seg.chars().count() + right.chars().count();
+    // The right block (diagnostic counts, cursor position, focus) always wins the
+    // space it needs; the hints are cut to whatever is left.
     let left: String = left.chars().take(total.saturating_sub(rw)).collect();
     let lw = left.chars().count();
     let pad = total.saturating_sub(lw + rw);
     let line = Line::from(vec![
         Span::styled(left, base),
         Span::styled(" ".repeat(pad), base),
+        Span::styled(
+            err_seg,
+            Style::new()
+                .fg(model.theme.git_deleted)
+                .bg(model.theme.bg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            warn_seg,
+            Style::new()
+                .fg(model.theme.git_modified)
+                .bg(model.theme.bg)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(right, base),
     ]);
     frame.render_widget(Paragraph::new(line).style(base), area);

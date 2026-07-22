@@ -298,7 +298,7 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
                 }
                 Some(GitHit::Refresh) => {
                     model.focus = Focus::Sidebar;
-                    model.status_message = "Refreshing…".to_string();
+                    model.notify("Refreshing…".to_string());
                     vec![Cmd::LoadGitStatus]
                 }
                 // The file icon opens the plain file, not the diff view.
@@ -311,7 +311,7 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
                     model.focus = Focus::Sidebar;
                     // Disabled unless there is an unpushed commit to undo.
                     if model.sidebar.git.can_undo_commit() {
-                        model.status_message = "Undoing last commit…".to_string();
+                        model.notify("Undoing last commit…".to_string());
                         vec![Cmd::GitUndoLastCommit]
                     } else {
                         Vec::new()

@@ -118,10 +118,12 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
                         // Only the message gets the severity background; the gap
                         // before it stays on the editor background. The bg is a
                         // translucent tint (like git diff rows), text stays bright.
+                        // A leading icon marks the severity (error / warning).
                         let color = severity_color(&model.theme, d.severity);
+                        let icon = severity_icon(d.severity, model.ascii_icons);
                         spans.push(Span::raw("  "));
                         spans.push(Span::styled(
-                            format!(" {msg} "),
+                            format!(" {icon} {msg} "),
                             Style::new().fg(color).bg(model.theme.tint(color, 0.22)),
                         ));
                     }
@@ -238,6 +240,26 @@ fn severity_rank(sev: Severity) -> u8 {
         Severity::Warning => 1,
         Severity::Info => 2,
         Severity::Hint => 3,
+    }
+}
+
+/// The glyph marking a diagnostic of the given severity (codicon, or ASCII when
+/// `CODER_ASCII` is set).
+pub fn severity_icon(sev: Severity, ascii: bool) -> &'static str {
+    if ascii {
+        match sev {
+            Severity::Error => "E",
+            Severity::Warning => "W",
+            Severity::Info => "i",
+            Severity::Hint => "h",
+        }
+    } else {
+        match sev {
+            Severity::Error => "\u{ea87}",   // error
+            Severity::Warning => "\u{ea6c}", // warning
+            Severity::Info => "\u{ea74}",    // info
+            Severity::Hint => "\u{ea61}",    // lightbulb
+        }
     }
 }
 

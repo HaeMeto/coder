@@ -217,11 +217,11 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                 tab.buffer.path = Some(new.clone());
                 cmds.push(Cmd::LoadHeadText(new));
             }
-            model.status_message = format!(
+            model.notify(format!(
                 "Renamed: {} -> {}",
                 name_of(&from),
                 name_of(&to)
-            );
+            ));
             cmds.push(Cmd::LoadGitStatus);
             cmds
         }
@@ -243,7 +243,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             for i in gone.into_iter().rev() {
                 cmds.extend(close_tab(model, i));
             }
-            model.status_message = format!("Deleted '{}'", name_of(&path));
+            model.notify(format!("Deleted '{}'", name_of(&path)));
             cmds.push(Cmd::LoadGitStatus);
             cmds
         }
@@ -251,7 +251,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             for i in model.all_tabs_for(&path) {
                 model.tabs[i].buffer.mark_saved();
             }
-            model.status_message = format!("Saved: {}", path.display());
+            model.notify(format!("Saved: {}", path.display()));
             // Refresh git status, notify the language server, and run a linter.
             let mut cmds = vec![Cmd::LoadGitStatus];
             cmds.extend(lsp::did_save(model, &path));
@@ -325,8 +325,10 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             if query == model.sidebar.search.query.content() {
                 model.sidebar.search.results = matches;
                 model.sidebar.search.selected = 0;
-                model.status_message =
-                    format!("{} results found", model.sidebar.search.results.len());
+                model.notify(format!(
+                    "{} results found",
+                    model.sidebar.search.results.len()
+                ));
             }
             Vec::new()
         }
@@ -343,8 +345,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                 }
             }
             model.invalidate_highlight();
-            model.status_message =
-                format!("{} changes, {} files", count, changed.len());
+            model.notify(format!("{} changes, {} files", count, changed.len()));
             // Refresh the results and git status.
             let mut cmds = vec![Cmd::LoadGitStatus];
             let s = &model.sidebar.search;
@@ -374,7 +375,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::PtyExited => {
             model.terminal.session = None;
             model.terminal.spawn_requested = false;
-            model.status_message = "Terminal closed".to_string();
+            model.notify("Terminal closed".to_string());
             Vec::new()
         }
         Msg::LspSessionReady { language, handle } => {
@@ -391,12 +392,12 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::LspFormatEdits { token, edits } => lsp::format_edits_arrived(model, token, edits),
         Msg::LspExited { language } => {
             lsp::remove_server(model, &language);
-            model.status_message = format!("Language server '{language}' stopped");
+            model.notify(format!("Language server '{language}' stopped"));
             Vec::new()
         }
         Msg::LspError { language, message } => {
             lsp::remove_server(model, &language);
-            model.status_message = format!("LSP ({language}): {message}");
+            model.notify(format!("LSP ({language}): {message}"));
             Vec::new()
         }
         Msg::DidChangeDue { path, version } => lsp::change_due(model, &path, version),
@@ -414,11 +415,11 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             Vec::new()
         }
         Msg::Status(s) => {
-            model.status_message = s;
+            model.notify(s);
             Vec::new()
         }
         Msg::Error(e) => {
-            model.status_message = format!("Error: {e}");
+            model.notify(format!("Error: {e}"));
             Vec::new()
         }
         Msg::Toast(s) => {

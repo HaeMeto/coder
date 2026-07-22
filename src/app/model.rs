@@ -604,7 +604,6 @@ pub struct Model {
     pub layout: LayoutState,
     pub focus: Focus,
     pub should_quit: bool,
-    pub status_message: String,
     pub internal_clipboard: String,
     pub theme: Theme,
     /// Last known terminal size — for mouse hit-testing and layout.
@@ -706,7 +705,6 @@ impl Model {
             layout: LayoutState::default(),
             focus: Focus::Sidebar,
             should_quit: false,
-            status_message: String::from("Coder — Ctrl+Q quit · Ctrl+J terminal · Ctrl+B sidebar"),
             internal_clipboard: String::new(),
             // Keep the UI palette and the syntax theme consistent at startup.
             theme: highlight::theme_for(highlight::DEFAULT_THEME),
@@ -744,6 +742,27 @@ impl Model {
             shown_at: std::time::Instant::now(),
         });
         Cmd::ScheduleToastExpiry
+    }
+
+    /// Surfaces a transient status message to the user as a toast. Fire-and-forget
+    /// convenience for the many sync handlers that previously wrote the status bar;
+    /// the toast's auto-hide is gated by `Toast::is_expired` at render time.
+    pub fn notify(&mut self, message: impl Into<String>) {
+        let _ = self.show_toast(message);
+    }
+
+    /// (errors, warnings) in the active buffer, from its stored diagnostics.
+    pub fn active_diagnostic_counts(&self) -> (usize, usize) {
+        use crate::services::lsp::Severity;
+        self.active_buffer()
+            .and_then(|b| b.path.as_ref())
+            .and_then(|p| self.diagnostics.get(p))
+            .map(|diags| {
+                let e = diags.iter().filter(|d| d.severity == Severity::Error).count();
+                let w = diags.iter().filter(|d| d.severity == Severity::Warning).count();
+                (e, w)
+            })
+            .unwrap_or((0, 0))
     }
 
     /// Refreshes the highlight cache if the active buffer changed (called before render).

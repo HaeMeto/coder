@@ -110,7 +110,7 @@ fn sanitize_name(name: &str) -> Option<String> {
 fn valid_name(model: &mut Model, name: &str) -> Option<String> {
     let result = sanitize_name(name);
     if result.is_none() && !name.trim().is_empty() {
-        model.status_message = format!("Error: invalid name '{}'", name.trim());
+        model.notify(format!("Error: invalid name '{}'", name.trim()));
     }
     result
 }

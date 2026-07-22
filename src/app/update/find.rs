@@ -122,7 +122,7 @@ pub(super) fn find_replace_all(model: &mut Model) -> Vec<Cmd> {
         }
         model.invalidate_highlight();
     }
-    model.status_message = format!("{count} replaced");
+    model.notify(format!("{count} replaced"));
     recompute_find(model);
     Vec::new()
 }

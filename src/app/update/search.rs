@@ -30,7 +30,7 @@ pub(super) fn search_replace_all(model: &mut Model) -> Vec<Cmd> {
         s.match_case,
         s.search_hidden,
     );
-    model.status_message = "Replacing…".to_string();
+    model.notify("Replacing…".to_string());
     vec![Cmd::RunReplace {
         query,
         replace,
@@ -56,7 +56,7 @@ pub(super) fn search_replace_one(model: &mut Model) -> Vec<Cmd> {
         s.use_regex,
         s.match_case,
     );
-    model.status_message = "Replacing…".to_string();
+    model.notify("Replacing…".to_string());
     vec![Cmd::RunReplaceLine {
         path,
         line_no,

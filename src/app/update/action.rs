@@ -59,7 +59,7 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
             // Cheap whitespace formatting runs synchronously first.
             apply_format_on_save(model);
             let Some(path) = model.active_buffer().and_then(|b| b.path.clone()) else {
-                model.status_message = "No file path to save to".to_string();
+                model.notify("No file path to save to".to_string());
                 return Vec::new();
             };
             // When format-on-save is on and the language has a formatter (LSP or
@@ -205,7 +205,7 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
                 // Enter in the Replace field -> replace across all files.
                 SearchField::Replace => {
                     let replace = s.replace.content().to_string();
-                    model.status_message = "Replacing...".to_string();
+                    model.notify("Replacing...".to_string());
                     vec![Cmd::RunReplace {
                         query,
                         replace,

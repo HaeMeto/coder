@@ -7,11 +7,11 @@ pub(super) fn git_commit(model: &mut Model) -> Vec<Cmd> {
     let g = &mut model.sidebar.git;
     let msg = g.commit.content().trim().to_string();
     if msg.is_empty() {
-        model.status_message = "Commit message is empty".to_string();
+        model.notify("Commit message is empty".to_string());
         return Vec::new();
     }
     if g.staged.is_empty() {
-        model.status_message = "No staged changes".to_string();
+        model.notify("No staged changes".to_string());
         return Vec::new();
     }
     g.commit.clear();

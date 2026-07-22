@@ -125,7 +125,7 @@ pub(super) fn open_path(model: &mut Model, path: PathBuf) -> Vec<Cmd> {
 /// defaults) first if it doesn't exist yet so there is always something to edit.
 pub(super) fn open_config(model: &mut Model) -> Vec<Cmd> {
     let Some(path) = crate::services::config::config_path() else {
-        model.status_message = "No config path available".to_string();
+        model.notify("No config path available".to_string());
         return Vec::new();
     };
     if !path.exists() {
@@ -193,7 +193,7 @@ pub(super) fn apply_reload(model: &mut Model, path: PathBuf, text: String) -> Ve
         }
     }
     if reloaded {
-        model.status_message = format!("Reloaded from disk: {}", target.display());
+        model.notify(format!("Reloaded from disk: {}", target.display()));
         vec![Cmd::LoadHeadText(target)]
     } else {
         Vec::new()
