@@ -108,6 +108,15 @@ static EMBEDDED_THEMES: &[(&str, &str)] = &[
 /// Default syntect theme used at application startup.
 pub const DEFAULT_THEME: &str = "base16-eighties.dark";
 
+/// Forces the syntax and theme sets to build now. They are otherwise built
+/// lazily on the first highlight — deserializing the bundled syntax dump costs
+/// ~500ms and would stall the first file open. Call from a background thread at
+/// startup; `OnceLock` makes the race with the first real use harmless.
+pub fn warm() {
+    syntax_set();
+    theme_set();
+}
+
 /// Names of the loaded syntect themes (alphabetical; BTreeMap order).
 pub fn theme_names() -> Vec<String> {
     theme_set().themes.keys().cloned().collect()
@@ -152,6 +161,9 @@ pub fn theme_for(name: &str) -> Theme {
         // Subtle change backgrounds: mostly the editor bg with a hint of the git color.
         diff_add_bg: mix(def.git_added, bg, 0.82),
         diff_del_bg: mix(def.git_deleted, bg, 0.82),
+        // The theme's own find-highlight color when it defines one, else yellow.
+        find_match: s.find_highlight.map(conv).unwrap_or(def.find_match),
+        find_current: def.find_current,
     }
 }
 

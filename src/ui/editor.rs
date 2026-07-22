@@ -134,6 +134,10 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
     if let Some((start, end)) = selection {
         overlay_selection(frame, area, model, buf, gutter_w, start, end, &display, disp_start);
     }
+    // Find matches paint over the selection so the active match's color wins.
+    if model.find.open && !model.find.matches.is_empty() {
+        overlay_find_matches(frame, area, model, buf, gutter_w, &display, disp_start);
+    }
 
     // Draw our own block cursor (only when the editor is focused). A manual
     // block keeps the caret always white instead of the native terminal cursor,
@@ -432,6 +436,64 @@ pub fn render_scrollbar(frame: &mut Frame, area: Rect, model: &Model) {
         lines.push(Line::from(span));
     }
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// Paints the background of every find match (yellow), with the active match
+/// distinguished (blue, blinking). Only the matched cells' background changes.
+#[allow(clippy::too_many_arguments)]
+fn overlay_find_matches(
+    frame: &mut Frame,
+    area: Rect,
+    model: &Model,
+    buf: &crate::core::buffer::Buffer,
+    gutter_w: u16,
+    display: &[DiffRow],
+    disp_start: usize,
+) {
+    let scroll_x = buf.scroll_x;
+    let text_w = area.width.saturating_sub(gutter_w);
+    let current = model.find.current;
+    let bufmut = frame.buffer_mut();
+
+    for (mi, &(s, e)) in model.find.matches.iter().enumerate() {
+        if s >= e {
+            continue;
+        }
+        let is_current = current == Some(mi);
+        // Active match: blue background with white text; others: yellow background.
+        let style = if is_current {
+            Style::new().bg(model.theme.find_current).fg(Color::White)
+        } else {
+            Style::new().bg(model.theme.find_match)
+        };
+        // A match is a [start, end) char range; paint it line by line.
+        let s_line = buf.rope.char_to_line(s);
+        let e_line = buf.rope.char_to_line(e);
+        for row in s_line..=e_line {
+            let disp = real_display_index(display, row);
+            if disp < disp_start || disp >= disp_start + area.height as usize {
+                continue;
+            }
+            let line_start = buf.rope.line_to_char(row);
+            let line_len = buf.line_len(row);
+            let col_start = if row == s_line { s - line_start } else { 0 };
+            let col_end = if row == e_line { (e - line_start).min(line_len) } else { line_len };
+            let y = area.y + (disp - disp_start) as u16;
+            for col in col_start..col_end {
+                if col < scroll_x {
+                    continue;
+                }
+                let vis = (col - scroll_x) as u16;
+                if vis >= text_w {
+                    break;
+                }
+                let x = area.x + gutter_w + vis;
+                if let Some(cell) = bufmut.cell_mut((x, y)) {
+                    cell.set_style(style);
+                }
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
