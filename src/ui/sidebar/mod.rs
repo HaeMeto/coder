@@ -34,8 +34,8 @@ pub(super) fn content_rect(area: Rect) -> Rect {
 }
 
 /// Rows reserved at the top of the inner sidebar area, above the panel body:
-/// the title row (0) plus one blank spacer (1).
-const HEADER_ROWS: u16 = 2;
+/// the title row (0), a blank spacer (1), and the root/header-actions row (2).
+const HEADER_ROWS: u16 = 3;
 
 /// The region where a panel's body is drawn: the sidebar inset by 1 on every
 /// side (`content_rect`), minus `HEADER_ROWS` at the top. **This is the single

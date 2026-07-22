@@ -11,8 +11,8 @@ use crate::app::model::Model;
 use super::{content_rect, list_scroll, panel_area};
 
 /// Columns reserved at the right edge of a directory row for the
-/// "new file" / "new folder" buttons: `[icon][space][icon][space]`.
-const ACTION_COLS: usize = 4;
+/// "new file" / "new folder" buttons: `[icon][space][space][icon][space]`.
+const ACTION_COLS: usize = 5;
 /// A row narrower than this has no room for the action icons.
 const MIN_ACTION_WIDTH: usize = 8;
 
@@ -66,7 +66,9 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
         let line_style = if selected {
             Style::new().bg(model.theme.selected_bg())
         } else if is_active {
-            Style::new().fg(model.theme.fg).bg(model.theme.selected_bg())
+            Style::new()
+                .fg(model.theme.fg)
+                .bg(model.theme.selected_bg())
         } else {
             Style::new().bg(model.theme.bg_alt)
         };
@@ -84,8 +86,11 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
                 name_style,
             ));
             spans.push(Span::styled(new_file, Style::new().fg(model.theme.fg_dim)));
-            spans.push(Span::raw(" "));
-            spans.push(Span::styled(new_folder, Style::new().fg(model.theme.fg_dim)));
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(
+                new_folder,
+                Style::new().fg(model.theme.fg_dim),
+            ));
             spans.push(Span::raw(" "));
         } else {
             spans.push(Span::styled(row.name.clone(), name_style));
@@ -96,24 +101,48 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
     frame.render_widget(p, area);
 }
 
-/// The title row of the sidebar (first row of the inset content area).
+/// The workspace-root row of the Files panel: the second inset row, directly
+/// below the "EXPLORER" title. Holds the root directory name and the root
+/// "new file"/"new folder" buttons.
 fn header_row(area: Rect) -> Rect {
-    Rect { height: 1, ..content_rect(area) }
+    let inner = content_rect(area);
+    Rect {
+        y: inner.y + 2,
+        height: 1,
+        ..inner
+    }
 }
 
-/// Draws the root "new file"/"new folder" buttons at the right edge of the
-/// Files panel title row. Mirrors the per-directory buttons: `[file][ ][folder][ ]`.
+/// Draws the workspace-root directory name and its "new file"/"new folder"
+/// buttons on the row directly below the "EXPLORER" title. The buttons are
+/// pinned to the right edge: `[file][ ][folder][ ]`.
 pub(super) fn render_header_actions(frame: &mut Frame, area: Rect, model: &Model) {
     let row = header_row(area);
     if (row.width as usize) < MIN_ACTION_WIDTH {
         return;
     }
+    // Root directory name, filling the row (buttons are drawn on top, at right).
+    let dir_name = model
+        .root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| model.root.to_string_lossy().into_owned());
+    let name = Paragraph::new(Line::from(Span::styled(
+        dir_name,
+        Style::new().fg(model.theme.fg),
+    )));
+    frame.render_widget(name, row);
+
     let (new_file, new_folder) = action_icons(model);
     let x = row.x + row.width - ACTION_COLS as u16;
-    let target = Rect { x, width: ACTION_COLS as u16, ..row };
+    let target = Rect {
+        x,
+        width: ACTION_COLS as u16,
+        ..row
+    };
     let spans = vec![
         Span::styled(new_file, Style::new().fg(model.theme.fg_dim)),
-        Span::raw(" "),
+        Span::raw("  "),
         Span::styled(new_folder, Style::new().fg(model.theme.fg_dim)),
         Span::raw(" "),
     ];
@@ -165,14 +194,17 @@ pub fn file_row_at(model: &Model, area: Rect, y: u16) -> Option<usize> {
 }
 
 /// Converts a click into a file-tree target. Mirrors `render`: on a directory row
-/// the last 4 columns are the new-file (width-4) and new-folder (width-2) buttons.
+/// the last 5 columns are the new-file (width-5) and new-folder (width-2) buttons.
 pub fn file_hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<FileHit> {
     let idx = file_row_at(model, area, y)?;
     let body = panel_area(area);
+
     let rows = model.sidebar.files.visible_rows();
     let row = rows.get(idx)?;
+
     let width = body.width as usize;
     let col = x.saturating_sub(body.x) as usize;
+
     if row.is_dir && width >= MIN_ACTION_WIDTH {
         if col >= width - 2 {
             return Some(FileHit::NewFolder(idx));

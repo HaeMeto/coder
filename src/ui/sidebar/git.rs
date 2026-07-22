@@ -415,8 +415,10 @@ fn entry_line(
     let indent = "  ".repeat(depth);
     let name = e.rel.rsplit('/').next().unwrap_or(e.rel.as_str());
     let file_icon = if model.ascii_icons { "•" } else { "" };
-    // icon (FILE_ICON_W) + indent + prefix (3) + name + suffix (4) = width
-    let avail = width.saturating_sub(FILE_ICON_W + indent.len() + 6);
+    // icon (FILE_ICON_W) + indent + prefix (3) + name + suffix = width.
+    // Unstaged suffix is one wider: "↺  +" (revert, gap, stage) vs staged "  -".
+    let suffix_w = if staged { 3 } else { 4 };
+    let avail = width.saturating_sub(FILE_ICON_W + indent.len() + 3 + suffix_w);
     let name_field = format!("{:<avail$}", fit_path(name, avail));
     let line_bg = if selected {
         th.selected_bg()
@@ -445,6 +447,7 @@ fn entry_line(
             revert.to_string(),
             Style::new().fg(th.git_deleted),
         ));
+        spans.push(Span::raw(" "));
         spans.push(Span::styled("+".to_string(), Style::new().fg(th.git_added)));
     }
     Line::from(spans).style(Style::new().bg(line_bg))
