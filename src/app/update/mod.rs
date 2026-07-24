@@ -164,11 +164,14 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                 model.pending_diff_scroll = None;
                 model.refresh_git_marks();
                 if let Some(first) = model.active_git_marks.keys().min().copied() {
+                    // Leave ~10 lines of context above the first change so it sits
+                    // a bit below the top edge rather than flush against it.
+                    const DIFF_TOP_MARGIN: usize = 10;
                     if let Some(buf) = model.active_buffer_mut() {
                         buf.goto_line(first);
+                        buf.scroll_y = first.saturating_sub(DIFF_TOP_MARGIN);
+                        buf.scroll_x = 0;
                     }
-                    // Put the first change at the top, not the bottom of the viewport.
-                    scroll_cursor_to_top(model);
                 }
             }
             Vec::new()

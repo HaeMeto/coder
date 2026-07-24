@@ -688,12 +688,6 @@ impl Buffer {
         self.cursor = Cursor { line, col: 0 };
     }
 
-    /// Scrolls so the cursor line sits at the top of the viewport.
-    pub fn scroll_cursor_to_top(&mut self) {
-        self.scroll_y = self.cursor.line;
-        self.scroll_x = 0;
-    }
-
     /// Scrolls so the cursor line sits (roughly) in the vertical center.
     pub fn center_cursor(&mut self, height: usize) {
         self.scroll_y = self.cursor.line.saturating_sub(height / 2);

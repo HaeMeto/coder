@@ -105,13 +105,6 @@ pub(super) fn ensure_cursor_visible(model: &mut Model) {
     }
 }
 
-/// Scrolls the active buffer so the cursor line sits at the top of the viewport.
-pub(super) fn scroll_cursor_to_top(model: &mut Model) {
-    if let Some(buf) = model.active_buffer_mut() {
-        buf.scroll_cursor_to_top();
-    }
-}
-
 /// Scrolls the active buffer so the cursor line is vertically centered.
 pub(super) fn center_cursor_in_view(model: &mut Model) {
     let (h, w) = editor_viewport(model);
