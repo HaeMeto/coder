@@ -1,0 +1,113 @@
+name: build-and-release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  publish-github:
+    name: Publish for ${{ matrix.build.OS }} (${{ matrix.build.TARGET }})
+    runs-on: ${{ matrix.build.OS }}
+    strategy:
+      fail-fast: false
+      matrix:
+        build:
+          - {
+              OS: ubuntu-latest,
+              TOOLCHAIN: stable,
+              TARGET: x86_64-unknown-linux-gnu,
+              ARGS: "",
+            }
+          - {
+              OS: windows-2022,
+              TOOLCHAIN: stable,
+              TARGET: x86_64-pc-windows-msvc,
+              ARGS: "",
+            }
+          - {
+              OS: macos-14,
+              TOOLCHAIN: stable,
+              TARGET: aarch64-apple-darwin,
+              ARGS: "",
+            }
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@v4
+
+      - name: Set the release version
+        shell: bash
+        run: echo "RELEASE_VERSION=${GITHUB_REF:11}" >> "$GITHUB_ENV"
+
+      - name: Install system dependencies (Ubuntu)
+        if: matrix.build.OS == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libdbus-1-dev pkg-config
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ matrix.build.TOOLCHAIN }}
+          target: ${{ matrix.build.TARGET }}
+          override: true
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --locked --target ${{ matrix.build.TARGET }} ${{ matrix.build.ARGS }}
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          mkdir -p release
+          if [ "${{ matrix.build.OS }}" = "windows-2022" ]; then
+            cp target/${{ matrix.build.TARGET }}/release/coder.exe release/
+          else
+            cp target/${{ matrix.build.TARGET }}/release/coder release/
+          fi
+          mv release/ coder-${{env.RELEASE_VERSION}}/
+
+      - name: Create release artifacts
+        shell: bash
+        run: |
+          if [ "${{ matrix.build.OS }}" = "windows-2022" ]; then
+            7z a -tzip "coder-${{ env.RELEASE_VERSION }}-${{ matrix.build.TARGET }}.zip" \
+              coder-${{ env.RELEASE_VERSION }}/
+          else
+            tar -czvf coder-${{ env.RELEASE_VERSION }}-${{ matrix.build.TARGET }}.tar.gz \
+              coder-${{ env.RELEASE_VERSION }}/
+            shasum -a 512 coder-${{ env.RELEASE_VERSION }}-${{ matrix.build.TARGET }}.tar.gz \
+              > coder-${{ env.RELEASE_VERSION }}-${{ matrix.build.TARGET }}.tar.gz.sha512
+          fi
+
+      - name: cargo-deb and cargo-generate-rpm
+        if: matrix.build.OS == 'ubuntu-latest'
+        run: |
+          cargo install cargo-deb
+          cargo install cargo-generate-rpm
+          cargo deb --target ${{ matrix.build.TARGET }} --no-build ${{ matrix.build.ARGS }} --output coder-${{ env.RELEASE_VERSION }}-${{ matrix.build.TARGET }}.deb
+          cargo generate-rpm --target ${{ matrix.build.TARGET }} ${{ matrix.build.ARGS }} -o coder-${{ env.RELEASE_VERSION }}-${{ matrix.build.TARGET }}.rpm
+
+      - name: Generate a changelog
+        uses: orhun/git-cliff-action@v4
+        id: git-cliff
+        with:
+          args: --latest --github-repo ${{ github.repository }}
+        env:
+          OUTPUT: CHANGES.md
+
+      - name: Upload the binary releases
+        uses: svenstaro/upload-release-action@v2
+        with:
+          file: coder-${{ env.RELEASE_VERSION }}-${{ matrix.build.TARGET }}*
+          file_glob: true
+          overwrite: true
+          tag: ${{ github.ref }}
+          release_name: "coder v${{ env.RELEASE_VERSION }}"
+          body: ${{ steps.git-cliff.outputs.content }}
+          repo_token: ${{ secrets.RELEASE_TOKEN }}
