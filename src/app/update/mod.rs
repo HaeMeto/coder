@@ -45,6 +45,24 @@ use sidebar_nav::*;
 use tabs::*;
 use terminal::sync_terminal_size;
 
+/// Fires debounced work whose deadline has elapsed. Called once per main-loop
+/// iteration (not on a message) so autocomplete and `didChange` are throttled
+/// without spawning a timer task per keystroke.
+pub fn tick(model: &mut Model) -> Vec<Cmd> {
+    let (autocomplete, didchange) = model.take_due_timers(std::time::Instant::now());
+    let mut cmds = Vec::new();
+    if autocomplete {
+        // The completion request flushes the current text on its own, so a pending
+        // didChange for the same edit is now redundant — drop it.
+        model.cancel_didchange();
+        cmds.extend(lsp::request_completion(model));
+    }
+    if didchange {
+        cmds.extend(lsp::flush_didchange(model));
+    }
+    cmds
+}
+
 pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
     match msg {
         Msg::Key(key) => {
@@ -97,6 +115,23 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             sync_terminal_size(model);
             Vec::new()
         }
+        Msg::Quit => {
+            model.should_quit = true;
+            Vec::new()
+        }
+        Msg::Highlighted {
+            tab,
+            version,
+            base,
+            lines,
+        } => {
+            // Only the active tab is highlighted; drop a result for a tab that has
+            // since been switched away or closed.
+            if model.active_tab == Some(tab) && tab < model.tabs.len() {
+                model.set_display_hl(tab, version, base, lines);
+            }
+            Vec::new()
+        }
         Msg::DirScanned { path, entries } => {
             model.sidebar.files.set_children(&path, entries);
             // A rescan after a delete can leave the selection past the last row.
@@ -109,8 +144,6 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::FileLoaded { path, text } => {
             let buffer = Buffer::new(Some(path.clone()), &text);
             let mut tab = Tab::new(buffer);
-            // Highlight with the active theme (Tab::new defaults to DEFAULT_THEME).
-            tab.highlighter.set_theme(model.current_theme_name());
             // A load requested from the Git panel becomes a diff-mode tab.
             if model.pending_diff.as_deref() == Some(path.as_path()) {
                 tab.diff_mode = true;
@@ -255,6 +288,9 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                 model.tabs[i].buffer.mark_saved();
             }
             model.notify(format!("Saved: {}", path.display()));
+            // Reveal the change gutter now: it was frozen while editing, so a save
+            // is when the diff catches up to what is on disk.
+            model.mark_git_dirty();
             // Refresh git status, notify the language server, and run a linter.
             let mut cmds = vec![Cmd::LoadGitStatus];
             cmds.extend(lsp::did_save(model, &path));
@@ -343,9 +379,6 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                 if let Ok(text) = std::fs::read_to_string(path) {
                     for i in model.all_tabs_for(path) {
                         model.tabs[i].buffer = Buffer::new(Some(path.clone()), &text);
-                        // Version restarts at 0; drop the highlighter cache so the
-                        // replaced text is re-highlighted (see apply_reload).
-                        model.tabs[i].highlighter.invalidate();
                     }
                 }
             }
@@ -405,7 +438,6 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             model.notify(format!("LSP ({language}): {message}"));
             Vec::new()
         }
-        Msg::DidChangeDue { path, version } => lsp::change_due(model, &path, version),
         Msg::FormatterOutput {
             path,
             text,

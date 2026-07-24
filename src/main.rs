@@ -8,10 +8,11 @@ mod ui;
 
 use std::io::{self, Stdout};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyEventKind,
+    DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyEventKind, MouseEventKind,
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
@@ -27,7 +28,7 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 use crate::app::cmd::{self, Cmd};
 use crate::app::model::Model;
 use crate::app::msg::Msg;
-use crate::app::update::update;
+use crate::app::update::{self, update};
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
 
@@ -139,6 +140,10 @@ async fn run(
     let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
     let mut model = Model::new(root.clone());
 
+    // Syntax highlighting runs on its own worker thread; results arrive as
+    // `Msg::Highlighted`. The render loop never blocks on syntect this way.
+    model.set_hl_worker(crate::app::hlworker::spawn(tx.clone()));
+
     // Initial size.
     if let Ok((w, h)) = crossterm::terminal::size() {
         model.term_size = (w, h);
@@ -165,9 +170,23 @@ async fn run(
     }
     dispatch(cmds, &model, &tx);
 
-    let mut events = EventStream::new();
+    // Forward terminal events into the same channel as internal messages, so the
+    // main loop has one source to drain and never needs `tokio::select!`. Events
+    // and async results are then handled in arrival order, all pending ones per
+    // iteration, with a single render per batch.
+    spawn_event_forwarder(tx.clone());
+
+    // How long the loop waits for a message before waking on its own to fire any
+    // due debounce (autocomplete / didChange) and repaint. Keeps the UI live even
+    // with no input, and bounds how late a deadline fires to one tick.
+    const TICK: Duration = Duration::from_millis(50);
 
     loop {
+        // Fire any debounced work whose deadline elapsed (checked every iteration
+        // instead of spawning a timer task per keystroke).
+        let cmds = update::tick(&mut model);
+        dispatch(cmds, &model, &tx);
+
         model.refresh_highlight();
         model.refresh_git_marks();
         terminal.draw(|f| ui::view(f, &model))?;
@@ -175,33 +194,59 @@ async fn run(
             break;
         }
 
-        tokio::select! {
-            maybe_event = events.next() => {
-                match maybe_event {
-                    Some(Ok(event)) => {
-                        for msg in map_event(event) {
-                            let cmds = update(&mut model, msg);
-                            dispatch(cmds, &model, &tx);
-                        }
-                    }
-                    Some(Err(_)) | None => break,
-                }
-            }
-            maybe_msg = rx.recv() => {
-                let Some(msg) = maybe_msg else { break };
-                watch_scanned_dir(&mut watcher, &msg);
-                let cmds = update(&mut model, msg);
-                dispatch(cmds, &model, &tx);
-                // Drain pending messages (e.g. heavy PTY output).
+        // Wait for the next message, but wake at least every TICK so a pending
+        // deadline still fires when no event arrives. On timeout just loop.
+        match tokio::time::timeout(TICK, rx.recv()).await {
+            Ok(Some(msg)) => {
+                handle_msg(&mut model, &mut watcher, &tx, msg);
+                // Drain everything else already queued (a keystroke burst, heavy
+                // PTY output, batched async results) before the next render.
                 while let Ok(msg) = rx.try_recv() {
-                    watch_scanned_dir(&mut watcher, &msg);
-                    let cmds = update(&mut model, msg);
-                    dispatch(cmds, &model, &tx);
+                    handle_msg(&mut model, &mut watcher, &tx, msg);
                 }
             }
+            Ok(None) => break, // channel closed
+            Err(_) => {}       // idle tick: just loop and repaint
         }
     }
     Ok(())
+}
+
+/// Applies one message: watch bookkeeping, `update`, then dispatch its commands.
+fn handle_msg(
+    model: &mut Model,
+    watcher: &mut Option<notify::RecommendedWatcher>,
+    tx: &UnboundedSender<Msg>,
+    msg: Msg,
+) {
+    watch_scanned_dir(watcher, &msg);
+    let cmds = update(model, msg);
+    dispatch(cmds, model, tx);
+}
+
+/// Reads the crossterm event stream on its own task and forwards each event into
+/// the message channel as a `Msg`. When the stream ends or errors (terminal
+/// closed), it sends `Msg::Quit` so the main loop — which only awaits `rx` — exits
+/// instead of blocking forever.
+fn spawn_event_forwarder(tx: UnboundedSender<Msg>) {
+    tokio::spawn(async move {
+        let mut events = EventStream::new();
+        loop {
+            match events.next().await {
+                Some(Ok(event)) => {
+                    for msg in map_event(event) {
+                        if tx.send(msg).is_err() {
+                            return; // receiver gone: app is shutting down
+                        }
+                    }
+                }
+                Some(Err(_)) | None => {
+                    let _ = tx.send(Msg::Quit);
+                    return;
+                }
+            }
+        }
+    });
 }
 
 /// Adds a non-recursive watch on a directory as soon as it is scanned, so changes
@@ -246,6 +291,10 @@ fn map_event(event: Event) -> Vec<Msg> {
                 Vec::new()
             }
         }
+        // Bare mouse movement (no button held) does nothing — drop it here so it
+        // never wakes the loop or forces a redraw. Drags (move with a button) still
+        // come through for selection / panel resize.
+        Event::Mouse(m) if matches!(m.kind, MouseEventKind::Moved) => Vec::new(),
         Event::Mouse(m) => vec![Msg::Mouse(m)],
         Event::Resize(w, h) => vec![Msg::Resize(w, h)],
         _ => Vec::new(),

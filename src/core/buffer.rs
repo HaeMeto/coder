@@ -39,6 +39,15 @@ pub struct Buffer {
     pub dirty: bool,
     /// Version that increments on every edit; used to invalidate the highlight cache.
     pub version: u64,
+    /// Lowest line index touched since the highlight cache last consumed it.
+    /// The highlighter only re-highlights from here down, reusing the cached
+    /// prefix. `usize::MAX` means "no edit since last highlight".
+    dirty_from: usize,
+    /// Whether any edit since the last highlight spanned more than one line (its
+    /// removed or inserted text contained a newline). A single-line edit lets the
+    /// highlighter stop as soon as the per-line parse state reconverges; a wide
+    /// edit may have shifted lines, so the whole viewport tail is re-highlighted.
+    dirty_wide: bool,
     undo_stack: Vec<Edit>,
     redo_stack: Vec<Edit>,
 }
@@ -54,9 +63,41 @@ impl Buffer {
             scroll_x: 0,
             dirty: false,
             version: 0,
+            dirty_from: 0,
+            dirty_wide: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
         }
+    }
+
+    /// Records that line `at` (and everything below it) may need re-highlighting.
+    /// `wide` is true when the edit's removed or inserted text crossed a line
+    /// boundary, so the highlighter cannot assume line indices stayed aligned.
+    fn mark_dirty_from(&mut self, char_idx: usize, wide: bool) {
+        let idx = char_idx.min(self.rope.len_chars());
+        let line = self.rope.char_to_line(idx);
+        self.dirty_from = self.dirty_from.min(line);
+        self.dirty_wide |= wide;
+    }
+
+    /// Returns `(lowest changed line, wide?)` since the last call, then resets to
+    /// "clean". `usize::MAX` means nothing changed (only a scroll may have extended
+    /// the needed range). `wide` is true if any edit crossed a line boundary.
+    pub fn take_dirty(&mut self) -> (usize, bool) {
+        let from = std::mem::replace(&mut self.dirty_from, usize::MAX);
+        let wide = std::mem::replace(&mut self.dirty_wide, false);
+        (from, wide)
+    }
+
+    /// Records a mutation at `char_idx`: bumps the version, marks the buffer
+    /// dirty, and extends the re-highlight range. Every code path that changes
+    /// the rope must go through here so the highlight cache never keeps a stale
+    /// prefix — the version bump and `mark_dirty_from` are two halves of one act.
+    /// `wide` = the edit's before/after text crossed a line boundary.
+    fn bump_version(&mut self, char_idx: usize, wide: bool) {
+        self.dirty = true;
+        self.version += 1;
+        self.mark_dirty_from(char_idx, wide);
     }
 
     #[cfg(test)]
@@ -545,6 +586,113 @@ impl Buffer {
         });
     }
 
+    /// The inclusive line range the selection touches, or `None` with no
+    /// selection. A selection ending at column 0 does not include that final
+    /// line — nothing on it is actually selected.
+    fn selected_line_span(&self) -> Option<(usize, usize)> {
+        let (s, e) = self.selection_range()?;
+        let end = if e.line > s.line && e.col == 0 { e.line - 1 } else { e.line };
+        Some((s.line, end))
+    }
+
+    /// True when the selection spans more than one line — the case where Tab
+    /// indents the block instead of inserting a tab.
+    pub fn selection_is_multiline(&self) -> bool {
+        self.selected_line_span().is_some_and(|(s, e)| e > s)
+    }
+
+    /// Indents every selected line by one unit (four spaces). Blank lines are
+    /// left untouched so no trailing whitespace is created.
+    pub fn indent_selection(&mut self) {
+        if let Some((start, end)) = self.selected_line_span() {
+            self.shift_lines(start, end, true);
+        }
+    }
+
+    /// Removes up to one indent unit (four leading spaces, or a leading tab) from
+    /// every selected line.
+    pub fn dedent_selection(&mut self) {
+        if let Some((start, end)) = self.selected_line_span() {
+            self.shift_lines(start, end, false);
+        }
+    }
+
+    /// Re-indents lines `start..=end` as a single undo step, carrying the cursor
+    /// and selection anchor along by however much their own line shifted. A no-op
+    /// (dedenting lines with no leading whitespace) makes no edit.
+    fn shift_lines(&mut self, start: usize, end: usize, indent: bool) {
+        const UNIT: &str = "    ";
+
+        // Per-line column shift, computed from the original text.
+        let delta = |line: usize| -> isize {
+            let t = self.line_text(line);
+            if indent {
+                if t.is_empty() { 0 } else { UNIT.len() as isize }
+            } else {
+                -(leading_indent_width(&t) as isize)
+            }
+        };
+
+        // Build the replacement text line by line, preserving line endings.
+        let region_start = self.rope.line_to_char(start);
+        let region_end = if end + 1 < self.rope.len_lines() {
+            self.rope.line_to_char(end + 1)
+        } else {
+            self.rope.len_chars()
+        };
+        let old = self.rope.slice(region_start..region_end).to_string();
+        let mut new_text = String::new();
+        for (offset, ln) in (start..=end).enumerate() {
+            if offset > 0 {
+                new_text.push('\n');
+            }
+            let t = self.line_text(ln);
+            if indent {
+                if !t.is_empty() {
+                    new_text.push_str(UNIT);
+                }
+                new_text.push_str(&t);
+            } else {
+                let drop = leading_indent_width(&t);
+                new_text.extend(t.chars().skip(drop));
+            }
+        }
+        if old.ends_with('\n') {
+            new_text.push('\n');
+        }
+        // Dedenting lines with no indent changes nothing — skip the edit so it
+        // does not bump the version or leave an empty undo step.
+        if new_text == old {
+            return;
+        }
+
+        // Shift the cursor / anchor by their line's delta before mutating.
+        let recol = |c: Cursor| -> Cursor {
+            if c.line < start || c.line > end {
+                return c;
+            }
+            let col = (c.col as isize + delta(c.line)).max(0) as usize;
+            Cursor { line: c.line, col }
+        };
+        let cursor_before = self.cursor;
+        let new_cursor = recol(self.cursor);
+        let new_anchor = self.anchor.map(recol);
+
+        self.rope.remove(region_start..region_end);
+        self.rope.insert(region_start, &new_text);
+        self.cursor = new_cursor;
+        self.anchor = new_anchor;
+        self.push_edit(Edit {
+            char_idx: region_start,
+            before: old,
+            after: new_text,
+            cursor_before,
+            cursor_after: self.cursor,
+            stamp: Instant::now(),
+            typing: false,
+        });
+    }
+
     pub fn backspace(&mut self) {
         if self.delete_selection_internal() {
             return;
@@ -591,8 +739,8 @@ impl Buffer {
     }
 
     fn push_edit(&mut self, edit: Edit) {
-        self.dirty = true;
-        self.version += 1;
+        let wide = edit.before.contains('\n') || edit.after.contains('\n');
+        self.bump_version(edit.char_idx, wide);
         self.redo_stack.clear();
 
         // Merge consecutive typed characters into a single undo step.
@@ -624,8 +772,8 @@ impl Buffer {
             }
             self.cursor = edit.cursor_before;
             self.anchor = None;
-            self.version += 1;
-            self.dirty = true;
+            let wide = edit.before.contains('\n') || edit.after.contains('\n');
+            self.bump_version(start, wide);
             self.redo_stack.push(edit);
         }
     }
@@ -640,8 +788,8 @@ impl Buffer {
             }
             self.cursor = edit.cursor_after;
             self.anchor = None;
-            self.version += 1;
-            self.dirty = true;
+            let wide = edit.before.contains('\n') || edit.after.contains('\n');
+            self.bump_version(start, wide);
             self.undo_stack.push(edit);
         }
     }
@@ -716,6 +864,17 @@ impl Buffer {
 /// Number of leading space/tab characters on a line.
 fn leading_ws(line: &str) -> usize {
     line.chars().take_while(|c| *c == ' ' || *c == '\t').count()
+}
+
+/// How many leading characters one dedent removes: a single leading tab, or up
+/// to four leading spaces. Zero when the line has no leading whitespace.
+fn leading_indent_width(line: &str) -> usize {
+    let mut chars = line.chars();
+    match chars.next() {
+        Some('\t') => 1,
+        Some(' ') => 1 + chars.take(3).take_while(|c| *c == ' ').count(),
+        _ => 0,
+    }
 }
 
 /// Re-indents a multi-line paste. The first line is left verbatim (the cursor
@@ -838,6 +997,70 @@ mod tests {
         assert_eq!(b.full_text(), "    ab\n    ");
         b.undo();
         assert_eq!(b.full_text(), "    ab", "the break and its indent undo together");
+    }
+
+    #[test]
+    fn indent_selection_indents_all_spanned_lines() {
+        let mut b = Buffer::new(None, "one\ntwo\nthree\n");
+        b.cursor = Cursor { line: 1, col: 3 };
+        b.anchor = Some(Cursor { line: 0, col: 0 }); // select lines 0..=1
+        assert!(b.selection_is_multiline());
+        b.indent_selection();
+        assert_eq!(b.full_text(), "    one\n    two\nthree\n");
+        // Cursor rides along by one indent unit.
+        assert_eq!(b.cursor, Cursor { line: 1, col: 7 });
+        // Undoes as a single step.
+        b.undo();
+        assert_eq!(b.full_text(), "one\ntwo\nthree\n");
+    }
+
+    #[test]
+    fn indent_selection_skips_blank_lines() {
+        let mut b = Buffer::new(None, "one\n\ntwo\n");
+        b.cursor = Cursor { line: 2, col: 3 }; // through the end of "two"
+        b.anchor = Some(Cursor { line: 0, col: 0 });
+        b.indent_selection();
+        // The blank middle line gains no trailing whitespace.
+        assert_eq!(b.full_text(), "    one\n\n    two\n");
+    }
+
+    #[test]
+    fn dedent_selection_removes_one_unit() {
+        let mut b = Buffer::new(None, "        a\n    b\n\tc\n");
+        b.cursor = Cursor { line: 2, col: 2 }; // through the end of "\tc"
+        b.anchor = Some(Cursor { line: 0, col: 0 });
+        b.dedent_selection();
+        // 4 spaces removed, 4 spaces removed (down to zero), one tab removed.
+        assert_eq!(b.full_text(), "    a\nb\nc\n");
+    }
+
+    #[test]
+    fn dedent_selection_no_leading_ws_is_noop() {
+        let mut b = Buffer::new(None, "a\nb\n");
+        b.cursor = Cursor { line: 1, col: 1 };
+        b.anchor = Some(Cursor { line: 0, col: 0 });
+        let before = b.version;
+        b.dedent_selection();
+        assert_eq!(b.full_text(), "a\nb\n");
+        assert_eq!(b.version, before, "no edit, no version bump");
+    }
+
+    #[test]
+    fn single_line_selection_is_not_multiline() {
+        let mut b = Buffer::new(None, "hello\n");
+        b.cursor = Cursor { line: 0, col: 5 };
+        b.anchor = Some(Cursor { line: 0, col: 0 });
+        assert!(!b.selection_is_multiline());
+    }
+
+    #[test]
+    fn selection_ending_at_col_zero_excludes_last_line() {
+        let mut b = Buffer::new(None, "one\ntwo\nthree\n");
+        b.cursor = Cursor { line: 2, col: 0 }; // caret at start of line 2
+        b.anchor = Some(Cursor { line: 0, col: 0 });
+        b.indent_selection();
+        // Line 2 is not visually selected, so it is left alone.
+        assert_eq!(b.full_text(), "    one\n    two\nthree\n");
     }
 
     #[test]

@@ -95,26 +95,43 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
             Vec::new()
         }
         Action::PrevTab => {
-            cycle_tab(model, -1);
-            Vec::new()
+            // Shift+Tab dedents a multi-line selection; otherwise it switches tabs.
+            if model.focus == Focus::Editor
+                && model.active_buffer().is_some_and(|b| b.selection_is_multiline())
+            {
+                edit(model, |b| b.dedent_selection())
+            } else {
+                cycle_tab(model, -1);
+                Vec::new()
+            }
         }
 
         // ----- Editor -----
         Action::Insert(c) => {
-            let mut cmds = edit(model, |b| b.insert_char(c));
-            // Auto-trigger completions while typing an identifier or after '.'.
+            let cmds = edit(model, |b| b.insert_char(c));
+            // Auto-trigger completions while typing an identifier or after '.',
+            // debounced ~400ms so a fast typist does not hit the server per key.
             if c.is_alphanumeric() || c == '_' || c == '.' {
-                cmds.extend(super::lsp::request_completion(model));
+                model.schedule_autocomplete();
             }
             cmds
         }
         Action::Newline => edit(model, |b| b.insert_newline()),
-        Action::InsertTab => edit(model, |b| b.insert_str("    ")),
+        // Tab indents a multi-line selection; otherwise it inserts a soft tab.
+        Action::InsertTab => {
+            if model.focus == Focus::Editor
+                && model.active_buffer().is_some_and(|b| b.selection_is_multiline())
+            {
+                edit(model, |b| b.indent_selection())
+            } else {
+                edit(model, |b| b.insert_str("    "))
+            }
+        }
         Action::Backspace => {
-            let mut cmds = edit(model, |b| b.backspace());
-            // Keep an open popup fresh as the prefix shrinks.
+            let cmds = edit(model, |b| b.backspace());
+            // Keep an open popup fresh as the prefix shrinks (debounced).
             if model.completion.is_some() {
-                cmds.extend(super::lsp::request_completion(model));
+                model.schedule_autocomplete();
             }
             cmds
         }

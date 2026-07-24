@@ -50,7 +50,7 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
 
     // Visual rows: real buffer lines, with removed lines woven in for diff tabs.
     let display = model.diff_rows();
-    let disp_start = model.diff_start(&display, top);
+    let disp_start = model.diff_start(display, top);
 
     // Diagnostics for this file (empty for files with no language server).
     let diags: &[Diagnostic] = buf
@@ -104,7 +104,7 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
                 spans.push(Span::styled(gutter, ln_style));
 
                 // Highlighted text pieces (clipped by scroll_x).
-                let hl_line = model.active_hl.get(row);
+                let hl_line = model.hl_line(row);
                 append_text_spans(&mut spans, hl_line, buf, row, scroll_x, text_w, model);
 
                 // Inline diagnostics: trail the line with the most-severe
@@ -152,14 +152,14 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
 
     // Overlay diagnostic squiggles, then the selection background per cell.
     if !diags.is_empty() {
-        overlay_diagnostics(frame, area, buf, gutter_w, diags, &display, disp_start);
+        overlay_diagnostics(frame, area, buf, gutter_w, diags, display, disp_start);
     }
     if let Some((start, end)) = selection {
-        overlay_selection(frame, area, model, buf, gutter_w, start, end, &display, disp_start);
+        overlay_selection(frame, area, model, buf, gutter_w, start, end, display, disp_start);
     }
     // Find matches paint over the selection so the active match's color wins.
     if model.find.open && !model.find.matches.is_empty() {
-        overlay_find_matches(frame, area, model, buf, gutter_w, &display, disp_start);
+        overlay_find_matches(frame, area, model, buf, gutter_w, display, disp_start);
     }
 
     // Draw our own block cursor (only when the editor is focused). A manual
@@ -220,8 +220,8 @@ fn render_notice(frame: &mut Frame, area: Rect, model: &Model, notice: &str) {
 pub fn cursor_screen_pos(model: &Model, area: Rect, gutter_w: u16) -> Option<(u16, u16)> {
     let buf = model.active_buffer()?;
     let display = model.diff_rows();
-    let disp_start = model.diff_start(&display, buf.scroll_y);
-    let cur_disp = real_display_index(&display, buf.cursor.line);
+    let disp_start = model.diff_start(display, buf.scroll_y);
+    let cur_disp = real_display_index(display, buf.cursor.line);
     if cur_disp < disp_start {
         return None;
     }
@@ -321,6 +321,12 @@ fn overlay_diagnostics(
 /// Display index of the row holding buffer line `line` (identity when there are
 /// no woven deletions above it).
 fn real_display_index(display: &[DiffRow], line: usize) -> usize {
+    // Woven deletions only push a real line to a *higher* index, so if `line`
+    // still sits at its own index there is nothing above it — the overwhelmingly
+    // common (non-diff) case, resolved without scanning the whole prefix.
+    if matches!(display.get(line), Some(DiffRow::Real(l)) if *l == line) {
+        return line;
+    }
     display
         .iter()
         .position(|r| matches!(r, DiffRow::Real(l) if *l == line))
@@ -348,17 +354,21 @@ fn deleted_row(
     // Empty line-number column (the removed line has no number in the new file).
     let num_w = (gutter_w as usize).saturating_sub(if git_on { 2 } else { 1 });
     spans.push(Span::styled(format!("{:>num_w$} ", "-"), Style::new().fg(th.git_deleted)));
-    // Removed text, clipped to the horizontal scroll window.
+    // Removed text, clipped to the horizontal scroll window — one span for the
+    // whole visible slice, not one per character.
+    let mut visible = String::new();
     let mut taken = 0usize;
     for (col, ch) in text.chars().enumerate() {
         if taken >= text_w {
             break;
         }
         if col >= scroll_x {
-            let display = if ch == '\t' { ' ' } else { ch };
-            spans.push(Span::styled(display.to_string(), Style::new().fg(th.fg)));
+            visible.push(if ch == '\t' { ' ' } else { ch });
             taken += 1;
         }
+    }
+    if !visible.is_empty() {
+        spans.push(Span::styled(visible, Style::new().fg(th.fg)));
     }
     Line::from(spans).style(Style::new().bg(th.diff_del_bg))
 }
@@ -388,16 +398,22 @@ fn append_text_spans(
         col: &mut usize,
         taken: &mut usize,
     ) {
+        // Collect the whole visible slice of this piece into one span instead of
+        // one span per character — a full line was allocating a String + Span per
+        // glyph every frame, the dominant render cost on long lines.
+        let mut visible = String::new();
         for ch in text.chars() {
             if *taken >= width {
                 break;
             }
             if *col >= scroll_x {
-                let display = if ch == '\t' { ' ' } else { ch };
-                spans.push(Span::styled(display.to_string(), Style::new().fg(color)));
+                visible.push(if ch == '\t' { ' ' } else { ch });
                 *taken += 1;
             }
             *col += 1;
+        }
+        if !visible.is_empty() {
+            spans.push(Span::styled(visible, Style::new().fg(color)));
         }
     }
 
@@ -509,7 +525,13 @@ fn overlay_find_matches(
         } else {
             Style::new().bg(model.theme.find_match)
         };
-        // A match is a [start, end) char range; paint it line by line.
+        // A match is a [start, end) char range; paint it line by line. Guard
+        // against ranges left over from a pre-edit buffer state (char_to_line
+        // panics on an out-of-bounds index).
+        let len = buf.rope.len_chars();
+        if s > len || e > len {
+            continue;
+        }
         let s_line = buf.rope.char_to_line(s);
         let e_line = buf.rope.char_to_line(e);
         for row in s_line..=e_line {

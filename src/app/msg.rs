@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use crossterm::event::{KeyEvent, MouseEvent};
 
+use crate::core::highlight::HlLine;
 use crate::services::git::{GitCommit, GitEntry};
 use crate::services::lsp::{CompletionItem, LspHandle, RawDiagnostic, RawTextEdit, Token};
 use crate::services::pty::PtySession;
@@ -14,6 +15,8 @@ pub enum Msg {
     Key(KeyEvent),
     Mouse(MouseEvent),
     Resize(u16, u16),
+    /// The terminal event stream ended or errored — exit the main loop.
+    Quit,
 
     // Async results
     DirScanned {
@@ -110,11 +113,6 @@ pub enum Msg {
         language: String,
         message: String,
     },
-    /// A debounced didChange fired; send it only if the buffer version matches.
-    DidChangeDue {
-        path: PathBuf,
-        version: u64,
-    },
     /// A standalone formatter produced new text for a file.
     FormatterOutput {
         path: PathBuf,
@@ -141,4 +139,12 @@ pub enum Msg {
     Toast(String),
     /// The toast duration elapsed: clear the toast if it is actually expired.
     ToastExpired,
+    /// The highlight worker finished a job: colored lines for `tab`/`version`,
+    /// starting at buffer line `base`. Applied only if the buffer is still there.
+    Highlighted {
+        tab: usize,
+        version: u64,
+        base: usize,
+        lines: Vec<HlLine>,
+    },
 }

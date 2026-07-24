@@ -219,7 +219,6 @@ fn force_replace_open_buffer(model: &mut Model, path: &std::path::Path, text: &s
         }
         let keep_path = model.tabs[i].buffer.path.clone();
         model.tabs[i].buffer = Buffer::new(keep_path, text);
-        model.tabs[i].highlighter.invalidate();
         model.tabs[i].buffer.mark_saved();
         if model.active_tab == Some(i) {
             model.invalidate_highlight();
@@ -268,10 +267,6 @@ pub(super) fn apply_reload(model: &mut Model, path: PathBuf, text: String) -> Ve
         let (sy, sx) = (tab.buffer.scroll_y, tab.buffer.scroll_x);
         let keep_path = tab.buffer.path.clone();
         tab.buffer = Buffer::new(keep_path, &text);
-        // The new buffer restarts at version 0, colliding with the highlighter's
-        // per-version cache — drop it so the reloaded text is re-highlighted
-        // instead of redrawing the stale (pre-change) spans.
-        tab.highlighter.invalidate();
         // Restore cursor / scroll, clamped to the (possibly shorter) new content.
         let last = tab.buffer.line_count().saturating_sub(1);
         let line = cur.line.min(last);

@@ -83,11 +83,6 @@ pub enum Cmd {
         to_server: UnboundedSender<LspClientMsg>,
         msg: LspClientMsg,
     },
-    /// Debounce a didChange: after a short delay, emit `Msg::DidChangeDue`.
-    ScheduleDidChange {
-        path: PathBuf,
-        version: u64,
-    },
     /// Run a standalone formatter (stdin -> stdout) on the buffer text.
     RunFormatterTool {
         path: PathBuf,
@@ -536,12 +531,6 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
         Cmd::LspSend { to_server, msg } => {
             // Sending on the unbounded intent channel is non-blocking.
             let _ = to_server.send(msg);
-        }
-        Cmd::ScheduleDidChange { path, version } => {
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-                let _ = tx.send(Msg::DidChangeDue { path, version });
-            });
         }
         Cmd::RunFormatterTool {
             path,

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use crate::app::cmd::Cmd;
 use crate::core::buffer::{Buffer, Cursor};
 use crate::core::filetree::FileTree;
-use crate::core::highlight::{self, HlLine, Highlighter};
+use crate::core::highlight::{self, HlLine};
 use crate::core::text_input::TextInputState;
 use crate::core::theme::Theme;
 use crate::services::git::{GitCommit, GitEntry, GutterKind};
@@ -172,7 +172,6 @@ pub enum DragTarget {
 
 pub struct Tab {
     pub buffer: Buffer,
-    pub highlighter: Highlighter,
     /// The file's content at git HEAD, for the change gutter. Loaded async.
     pub head_text: Option<String>,
     /// Opened from the Git panel as a diff: changed lines get a colored background.
@@ -185,10 +184,8 @@ pub struct Tab {
 
 impl Tab {
     pub fn new(buffer: Buffer) -> Self {
-        let highlighter = Highlighter::for_path(buffer.path.as_deref());
         Tab {
             buffer,
-            highlighter,
             head_text: None,
             diff_mode: false,
             notice: None,
@@ -621,10 +618,25 @@ pub struct Model {
     pub drag: Option<DragTarget>,
     /// Use ASCII instead of Nerd Font icons (for compatibility).
     pub ascii_icons: bool,
-    /// Render-ready highlight lines for the active buffer.
-    pub active_hl: Vec<HlLine>,
-    /// The (tab index, buffer version) that active_hl belongs to.
-    active_hl_key: Option<(usize, u64)>,
+    /// Colored lines for the active buffer, produced off-thread by the highlight
+    /// worker (see `app::hlworker`). Indexed from `display_base`; rows outside the
+    /// range render as plain text until the worker fills them in.
+    display_hl: Vec<HlLine>,
+    /// Buffer line index of `display_hl[0]` (the first visible line last shipped).
+    display_base: usize,
+    /// The (tab, version) `display_hl` was produced for. Colors may lag the current
+    /// version by a frame or two while typing; that is the point — text is never
+    /// held back waiting for color.
+    display_key: Option<(usize, u64)>,
+    /// Channel to the highlight worker; `None` until wired up in `run`.
+    hl_tx: Option<std::sync::mpsc::Sender<crate::app::hlworker::HlJob>>,
+    /// The (tab, version, scroll_y, needed) of the last job sent, to avoid
+    /// resubmitting an identical request every frame while still catching a scroll
+    /// that reveals lines above or below the shipped slice.
+    hl_sent: Option<(usize, u64, usize, usize)>,
+    /// Set when the worker must drop its cache before the next job (content replaced
+    /// by reload / format, or the theme changed).
+    hl_reset: bool,
     /// Line to jump to after the file is loaded (opening from a search result).
     pub pending_goto: Option<(PathBuf, usize)>,
     /// A file whose next load should become a diff-mode tab (opened from the Git panel).
@@ -637,12 +649,33 @@ pub struct Model {
     pub context_menu: Option<ContextMenu>,
     /// Change-gutter markers for the active buffer, keyed by line index.
     pub active_git_marks: std::collections::HashMap<usize, GutterKind>,
-    /// The (tab index, buffer version) that active_git_marks belongs to.
-    active_git_marks_key: Option<(usize, u64)>,
+    /// Which tab the current git-diff markers were computed for. The diff is
+    /// recomputed only on a tab switch or when `git_marks_dirty` is set (save,
+    /// reload, disk change, HEAD load) — never on a plain edit, so the gutter does
+    /// not churn a whole-file diff on every keystroke while typing.
+    active_git_marks_tab: Option<usize>,
+    /// Set when the git diff needs recomputing for a non-edit reason (file saved,
+    /// reloaded, changed on disk, or its HEAD text (re)loaded). Consumed by the
+    /// next `refresh_git_marks`.
+    git_marks_dirty: bool,
     /// Removed line blocks for the active diff tab's inline view: `(anchor, lines)`
     /// renders `lines` right after buffer line `anchor` (`None` = before line 0).
     /// Empty unless the active tab is a diff tab. Recomputed with `active_git_marks`.
     pub active_deleted: Vec<(Option<usize>, Vec<String>)>,
+    /// Cached visual rows for the active tab (see `diff_rows`). Rebuilt only when
+    /// the buffer version changes — the render path borrows it instead of
+    /// re-materializing a whole-file `Vec` two or three times per frame.
+    active_display: Vec<DiffRow>,
+    /// The (tab index, buffer version) `active_display` was built for.
+    active_display_key: Option<(usize, u64)>,
+    /// Deadline to fire a debounced autocomplete request, or `None`. Set to
+    /// ~400ms ahead on each identifier keystroke and checked every main-loop
+    /// iteration, so a burst of typing spawns no timer tasks and only asks the
+    /// server once the user pauses.
+    autocomplete_at: Option<std::time::Instant>,
+    /// Deadline to flush a debounced LSP `didChange`, or `None`. Set ~1s ahead on
+    /// each edit; checked every main-loop iteration like `autocomplete_at`.
+    didchange_at: Option<std::time::Instant>,
     /// In-editor find / replace widget state.
     pub find: FindState,
     /// Last left-click (time, column, row) for editor double-click detection.
@@ -723,16 +756,25 @@ impl Model {
             term_size: (80, 24),
             drag: None,
             ascii_icons: std::env::var("CODER_ASCII").is_ok(),
-            active_hl: Vec::new(),
-            active_hl_key: None,
+            display_hl: Vec::new(),
+            display_base: 0,
+            display_key: None,
+            hl_tx: None,
+            hl_sent: None,
+            hl_reset: false,
             pending_goto: None,
             pending_diff: None,
             pending_diff_scroll: None,
             dialog: None,
             context_menu: None,
             active_git_marks: std::collections::HashMap::new(),
-            active_git_marks_key: None,
+            active_git_marks_tab: None,
+            git_marks_dirty: false,
             active_deleted: Vec::new(),
+            active_display: Vec::new(),
+            active_display_key: None,
+            autocomplete_at: None,
+            didchange_at: None,
             find: FindState::default(),
             last_click: None,
             extensions: crate::services::extensions::ExtensionRegistry::default(),
@@ -777,54 +819,216 @@ impl Model {
             .unwrap_or((0, 0))
     }
 
-    /// Refreshes the highlight cache if the active buffer changed (called before render).
+    /// The colored pieces for buffer line `row`, or `None` when the worker has not
+    /// colored it yet (the renderer then draws it as plain text). Colors belong to
+    /// the active tab and may trail the current version by a frame while typing.
+    pub fn hl_line(&self, row: usize) -> Option<&HlLine> {
+        let (tab, _) = self.display_key?;
+        if Some(tab) != self.active_tab || row < self.display_base {
+            return None;
+        }
+        self.display_hl.get(row - self.display_base)
+    }
+
+    /// Wires up the highlight worker channel (called once at startup).
+    pub fn set_hl_worker(&mut self, tx: std::sync::mpsc::Sender<crate::app::hlworker::HlJob>) {
+        self.hl_tx = Some(tx);
+    }
+
+    /// Stores a worker result, ignoring one older than what is already shown.
+    pub fn set_display_hl(&mut self, tab: usize, version: u64, base: usize, lines: Vec<HlLine>) {
+        if let Some((t, v)) = self.display_key
+            && t == tab
+            && v > version
+        {
+            return;
+        }
+        self.display_key = Some((tab, version));
+        self.display_base = base;
+        self.display_hl = lines;
+    }
+
+    /// Submits a highlight job for the active buffer's current viewport (called
+    /// before render). Never runs syntect itself — the worker does, off-thread, so
+    /// the render loop stays responsive no matter how slow the syntax is.
     pub fn refresh_highlight(&mut self) {
-        if let Some(i) = self.active_tab {
-            let ver = self.tabs[i].buffer.version;
-            if self.active_hl_key != Some((i, ver)) {
-                let text = self.tabs[i].buffer.full_text();
-                let hl = self.tabs[i].highlighter.highlight(&text, ver).to_vec();
-                self.active_hl = hl;
-                self.active_hl_key = Some((i, ver));
-            }
-        } else {
-            self.active_hl.clear();
-            self.active_hl_key = None;
+        if self.hl_tx.is_none() {
+            return; // no worker wired up (e.g. in tests)
+        }
+        let Some(i) = self.active_tab else {
+            return;
+        };
+        let ver = self.tabs[i].buffer.version;
+        let sy = self.tabs[i].buffer.scroll_y;
+        // Lines from the top down to the viewport bottom need color; overestimate
+        // with the full terminal height so a partial editor pane is always covered.
+        let needed = sy + self.term_size.1 as usize + 8;
+        // Resubmit when the buffer changed, the tab changed, a reset was forced, or
+        // the viewport scrolled to reveal lines above (`sy < s`) or below (`needed
+        // > n`) the slice last shipped.
+        let need_send = self.hl_reset
+            || match self.hl_sent {
+                Some((t, v, s, n)) => t != i || v != ver || sy < s || needed > n,
+                None => true,
+            };
+        if !need_send {
+            return;
+        }
+        let (dirty_from, wide) = self.tabs[i].buffer.take_dirty();
+        let job = crate::app::hlworker::HlJob {
+            tab: i,
+            version: ver,
+            path: self.tabs[i].buffer.path.clone(),
+            theme_name: self.current_theme_name().to_string(),
+            reset: self.hl_reset,
+            text: self.tabs[i].buffer.full_text(),
+            dirty_from,
+            wide,
+            scroll_y: sy,
+            needed,
+        };
+        self.hl_sent = Some((i, ver, sy, needed));
+        self.hl_reset = false;
+        if let Some(tx) = &self.hl_tx {
+            let _ = tx.send(job);
         }
     }
 
-    /// Invalidates the highlight cache (when the buffer changes externally).
+    /// Invalidates highlighting (content replaced externally, or theme changed):
+    /// drops the shown colors so text falls back to plain until the worker — which
+    /// is told to reset its cache — returns fresh ones.
     pub fn invalidate_highlight(&mut self) {
-        self.active_hl_key = None;
-        self.active_git_marks_key = None;
+        self.hl_reset = true;
+        self.hl_sent = None;
+        self.display_key = None;
+        self.active_display_key = None;
+        // External content replacement (reload / format) changes the git diff too.
+        self.git_marks_dirty = true;
     }
 
-    /// Recomputes the change-gutter markers if the active buffer changed (called before render).
+    /// Schedules a debounced autocomplete request ~400ms out, resetting the timer
+    /// on every keystroke so the server is only asked once typing pauses.
+    pub fn schedule_autocomplete(&mut self) {
+        self.autocomplete_at =
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(400));
+    }
+
+    /// Schedules a debounced LSP `didChange` flush ~1s out (reset on every edit).
+    pub fn schedule_didchange(&mut self) {
+        self.didchange_at =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(1));
+    }
+
+    /// Cancels any pending autocomplete deadline (e.g. the popup was dismissed).
+    pub fn cancel_autocomplete(&mut self) {
+        self.autocomplete_at = None;
+    }
+
+    /// Cancels any pending `didChange` deadline (its text was already flushed).
+    pub fn cancel_didchange(&mut self) {
+        self.didchange_at = None;
+    }
+
+    /// Returns `(autocomplete_due, didchange_due)` for deadlines that have elapsed
+    /// by `now`, clearing each that fired. Called once per main-loop iteration.
+    pub fn take_due_timers(&mut self, now: std::time::Instant) -> (bool, bool) {
+        let ac = self.autocomplete_at.is_some_and(|t| t <= now);
+        if ac {
+            self.autocomplete_at = None;
+        }
+        let dc = self.didchange_at.is_some_and(|t| t <= now);
+        if dc {
+            self.didchange_at = None;
+        }
+        (ac, dc)
+    }
+
+    /// Forces the change-gutter diff to recompute on the next `refresh_git_marks`
+    /// (file saved, reloaded, changed on disk, or its HEAD text (re)loaded).
+    pub fn mark_git_dirty(&mut self) {
+        self.git_marks_dirty = true;
+    }
+
+    /// Refreshes the change-gutter state before render. The visual row map
+    /// (`active_display`) is rebuilt immediately on any version change — the
+    /// renderer maps screen rows to buffer lines through it, so it must never lag.
+    /// The git *diff* itself recomputes only on a tab switch or when
+    /// `git_marks_dirty` is set (save / reload / disk change / HEAD load); a plain
+    /// edit leaves the last-computed markers frozen, so typing never runs the
+    /// whole-file diff.
     pub fn refresh_git_marks(&mut self) {
-        match self.active_tab {
-            Some(i) => {
-                let ver = self.tabs[i].buffer.version;
-                if self.active_git_marks_key != Some((i, ver)) {
-                    self.active_git_marks.clear();
-                    self.active_deleted.clear();
-                    if let Some(head) = self.tabs[i].head_text.clone() {
-                        let new = self.tabs[i].buffer.full_text();
-                        for (ln, kind) in crate::services::git::gutter_marks(&head, &new) {
-                            self.active_git_marks.insert(ln, kind);
-                        }
-                        // Removed lines are only woven into the inline diff view.
-                        if self.tabs[i].diff_mode {
-                            self.active_deleted =
-                                crate::services::git::deleted_blocks(&head, &new);
-                        }
-                    }
-                    self.active_git_marks_key = Some((i, ver));
-                }
+        let Some(i) = self.active_tab else {
+            self.active_git_marks.clear();
+            self.active_deleted.clear();
+            self.active_display.clear();
+            self.active_git_marks_tab = None;
+            self.active_display_key = None;
+            return;
+        };
+        let ver = self.tabs[i].buffer.version;
+        // On a tab switch or an explicit trigger, rerun the whole-file diff; it
+        // rebuilds the row map itself (woven deletions may have changed). Otherwise
+        // a plain edit only needs the row map to track the new line count.
+        if self.active_git_marks_tab != Some(i) || self.git_marks_dirty {
+            self.recompute_git_marks();
+        } else if self.active_display_key != Some((i, ver)) {
+            self.rebuild_display(i);
+            self.active_display_key = Some((i, ver));
+        }
+    }
+
+    /// Runs the whole-file HEAD-vs-buffer diff for the active tab, refreshing the
+    /// gutter markers and any woven deletion rows. Called from `refresh_git_marks`
+    /// only on a tab switch or an explicit `git_marks_dirty` trigger.
+    fn recompute_git_marks(&mut self) {
+        let Some(i) = self.active_tab else {
+            return;
+        };
+        let ver = self.tabs[i].buffer.version;
+        self.active_git_marks.clear();
+        self.active_deleted.clear();
+        if let Some(head) = self.tabs[i].head_text.clone() {
+            let new = self.tabs[i].buffer.full_text();
+            for (ln, kind) in crate::services::git::gutter_marks(&head, &new) {
+                self.active_git_marks.insert(ln, kind);
             }
-            None => {
-                self.active_git_marks.clear();
-                self.active_deleted.clear();
-                self.active_git_marks_key = None;
+            // Removed lines are only woven into the inline diff view.
+            if self.tabs[i].diff_mode {
+                self.active_deleted = crate::services::git::deleted_blocks(&head, &new);
+            }
+        }
+        // Woven deletions may have changed -> refresh the visual row map with them.
+        self.rebuild_display(i);
+        self.active_display_key = Some((i, ver));
+        self.active_git_marks_tab = Some(i);
+        self.git_marks_dirty = false;
+    }
+
+    /// Rebuilds `active_display` for tab `i` from its line count and any woven
+    /// deletions. Called only when the buffer version changes, so the render path
+    /// can borrow the result instead of rebuilding it every frame.
+    fn rebuild_display(&mut self, i: usize) {
+        let n = self.tabs[i].buffer.line_count();
+        self.active_display.clear();
+        if !self.has_inline_deletions() {
+            self.active_display.extend((0..n).map(DiffRow::Real));
+            return;
+        }
+        self.active_display.reserve(n + self.active_deleted.len());
+        // Removals anchored before the first line.
+        for (anchor, lines) in &self.active_deleted {
+            if anchor.is_none() {
+                self.active_display
+                    .extend(lines.iter().cloned().map(DiffRow::Deleted));
+            }
+        }
+        for r in 0..n {
+            self.active_display.push(DiffRow::Real(r));
+            for (anchor, lines) in &self.active_deleted {
+                if *anchor == Some(r) {
+                    self.active_display
+                        .extend(lines.iter().cloned().map(DiffRow::Deleted));
+                }
             }
         }
     }
@@ -835,37 +1039,22 @@ impl Model {
     }
 
     /// The visual rows for the active tab: `Real(0..n)` normally, or real lines
-    /// interleaved with `Deleted` rows in a diff tab that has removals.
-    pub fn diff_rows(&self) -> Vec<DiffRow> {
-        let Some(i) = self.active_tab else {
-            return Vec::new();
-        };
-        let n = self.tabs[i].buffer.line_count();
-        if !self.has_inline_deletions() {
-            return (0..n).map(DiffRow::Real).collect();
-        }
-        let mut rows = Vec::with_capacity(n + self.active_deleted.len());
-        // Removals anchored before the first line.
-        for (anchor, lines) in &self.active_deleted {
-            if anchor.is_none() {
-                rows.extend(lines.iter().cloned().map(DiffRow::Deleted));
-            }
-        }
-        for r in 0..n {
-            rows.push(DiffRow::Real(r));
-            for (anchor, lines) in &self.active_deleted {
-                if *anchor == Some(r) {
-                    rows.extend(lines.iter().cloned().map(DiffRow::Deleted));
-                }
-            }
-        }
-        rows
+    /// interleaved with `Deleted` rows in a diff tab that has removals. Borrowed
+    /// from a cache rebuilt only on edit (see `refresh_git_marks`), so the render
+    /// path pays nothing to read it.
+    pub fn diff_rows(&self) -> &[DiffRow] {
+        &self.active_display
     }
 
     /// Display index of the first row to draw for a given buffer scroll offset.
     pub fn diff_start(&self, rows: &[DiffRow], scroll_y: usize) -> usize {
         if scroll_y == 0 {
             return 0;
+        }
+        // No woven deletions means the rows are the identity mapping, so line
+        // `scroll_y` is at index `scroll_y` — skip scanning the whole prefix.
+        if matches!(rows.get(scroll_y), Some(DiffRow::Real(l)) if *l == scroll_y) {
+            return scroll_y;
         }
         rows.iter()
             .position(|r| matches!(r, DiffRow::Real(l) if *l == scroll_y))
@@ -884,7 +1073,7 @@ impl Model {
             return (buf.scroll_y + offset).min(last);
         }
         let rows = self.diff_rows();
-        let start = self.diff_start(&rows, buf.scroll_y);
+        let start = self.diff_start(rows, buf.scroll_y);
         let idx = (start + offset).min(rows.len().saturating_sub(1));
         for r in &rows[idx..] {
             if let DiffRow::Real(l) = r {
@@ -913,11 +1102,8 @@ impl Model {
         };
         self.sidebar.themes.selected = idx;
         self.theme = highlight::theme_for(&name);
-        for tab in &mut self.tabs {
-            tab.highlighter.set_theme(&name);
-        }
-        // Forces a refresh of the active tab; the others are already cache-reset by
-        // set_theme and get recomputed when they are selected.
+        // The worker re-highlights with the new theme (carried in the next job);
+        // invalidation drops the old colors and forces a fresh submission.
         self.invalidate_highlight();
     }
 

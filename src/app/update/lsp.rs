@@ -75,34 +75,29 @@ pub(super) fn on_initialized(model: &mut Model, language: &str) -> Vec<Cmd> {
     cmds
 }
 
-/// Schedules a debounced `didChange` for the active buffer (if it has a server).
-pub(super) fn notify_change(model: &Model) -> Vec<Cmd> {
+/// Marks a debounced `didChange` due ~1s from now (reset on every edit). The main
+/// loop flushes it via `flush_didchange` once the deadline passes — no timer task.
+pub(super) fn notify_change(model: &mut Model) -> Vec<Cmd> {
+    // Only arm the timer when the active buffer actually has a running server.
     let Some(i) = model.active_tab else {
         return Vec::new();
     };
     let Some(lang_id) = tab_lsp_language(model, i) else {
         return Vec::new();
     };
-    if !model.lsp.initialized.contains(&lang_id) {
+    if !model.lsp.initialized.contains(&lang_id) || model.tabs[i].buffer.path.is_none() {
         return Vec::new();
     }
-    let Some(path) = model.tabs[i].buffer.path.clone() else {
-        return Vec::new();
-    };
-    vec![Cmd::ScheduleDidChange {
-        path,
-        version: model.tabs[i].buffer.version,
-    }]
+    model.schedule_didchange();
+    Vec::new()
 }
 
-/// A debounced change fired: send it only if the buffer hasn't advanced since.
-pub(super) fn change_due(model: &Model, path: &Path, version: u64) -> Vec<Cmd> {
-    let tab = model
-        .all_tabs_for(path)
-        .into_iter()
-        .find(|&i| model.tabs[i].buffer.version == version);
-    let Some(i) = tab else {
-        return Vec::new(); // superseded by a newer edit — the debounce did its job
+/// Sends the active buffer's current text to its language server as a `didChange`.
+/// Called by the main loop when the debounced deadline set in `notify_change`
+/// elapses.
+pub(super) fn flush_didchange(model: &Model) -> Vec<Cmd> {
+    let Some(i) = model.active_tab else {
+        return Vec::new();
     };
     let Some(lang_id) = tab_lsp_language(model, i) else {
         return Vec::new();
@@ -110,11 +105,14 @@ pub(super) fn change_due(model: &Model, path: &Path, version: u64) -> Vec<Cmd> {
     let Some(handle) = model.lsp.sessions.get(&lang_id) else {
         return Vec::new();
     };
+    let Some(path) = model.tabs[i].buffer.path.as_ref() else {
+        return Vec::new();
+    };
     vec![Cmd::LspSend {
         to_server: handle.to_server.clone(),
         msg: LspClientMsg::DidChange {
             uri: lsp::path_to_uri(path),
-            version: version as i32,
+            version: model.tabs[i].buffer.version as i32,
             text: model.tabs[i].buffer.full_text(),
         },
     }]
@@ -351,6 +349,7 @@ pub(super) fn completion_key(model: &mut Model, key: KeyEvent) -> Option<Vec<Cmd
         }
         KeyCode::Esc => {
             model.completion = None;
+            model.cancel_autocomplete(); // don't let a pending debounce reopen it
             Some(Vec::new())
         }
         KeyCode::Enter | KeyCode::Tab => Some(accept_completion(model)),
@@ -360,6 +359,7 @@ pub(super) fn completion_key(model: &mut Model, key: KeyEvent) -> Option<Vec<Cmd
         // Anything else (arrows, etc.): dismiss and let the key act normally.
         _ => {
             model.completion = None;
+            model.cancel_autocomplete();
             None
         }
     }
