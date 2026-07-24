@@ -416,10 +416,6 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             }
             Vec::new()
         }
-        Msg::Status(s) => {
-            model.notify(s);
-            Vec::new()
-        }
         Msg::Error(e) => {
             model.notify(format!("Error: {e}"));
             Vec::new()

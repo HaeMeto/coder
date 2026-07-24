@@ -34,17 +34,17 @@ pub(super) fn select_panel(model: &mut Model, p: Panel) -> Vec<Cmd> {
 
 pub(super) fn close_active_tab(model: &mut Model) -> Vec<Cmd> {
     if let Some(i) = model.active_tab {
-        if model.tabs[i].buffer.dirty {
-            if let Some(ref path) = model.tabs[i].buffer.path {
-                let display = path.display().to_string();
-                model.focus = Focus::Editor;
-                model.dialog = Some(Dialog::ask(
-                    "Close tab".to_string(),
-                    format!("Changes in '{display}' will be lost. Close anyway?"),
-                    DialogAction::CloseTab(i, display),
-                ));
-                return Vec::new();
-            }
+        if model.tabs[i].buffer.dirty
+            && let Some(ref path) = model.tabs[i].buffer.path
+        {
+            let display = path.display().to_string();
+            model.focus = Focus::Editor;
+            model.dialog = Some(Dialog::ask(
+                "Close tab".to_string(),
+                format!("Changes in '{display}' will be lost. Close anyway?"),
+                DialogAction::CloseTab(i, display),
+            ));
+            return Vec::new();
         }
         close_tab(model, i)
     } else {
@@ -56,17 +56,17 @@ pub(super) fn close_tab_with_dirty_check(model: &mut Model, i: usize) -> Vec<Cmd
     if i >= model.tabs.len() {
         return Vec::new();
     }
-    if model.tabs[i].buffer.dirty {
-        if let Some(ref path) = model.tabs[i].buffer.path {
-            let display = path.display().to_string();
-            model.focus = Focus::Editor;
-            model.dialog = Some(Dialog::ask(
-                "Close tab".to_string(),
-                format!("Changes in '{display}' will be lost. Close anyway?"),
-                DialogAction::CloseTab(i, display),
-            ));
-            return Vec::new();
-        }
+    if model.tabs[i].buffer.dirty
+        && let Some(ref path) = model.tabs[i].buffer.path
+    {
+        let display = path.display().to_string();
+        model.focus = Focus::Editor;
+        model.dialog = Some(Dialog::ask(
+            "Close tab".to_string(),
+            format!("Changes in '{display}' will be lost. Close anyway?"),
+            DialogAction::CloseTab(i, display),
+        ));
+        return Vec::new();
     }
     close_tab(model, i)
 }

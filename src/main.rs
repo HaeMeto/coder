@@ -7,6 +7,7 @@ mod services;
 mod ui;
 
 use std::io::{self, Stdout};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use crossterm::event::{
@@ -72,6 +73,12 @@ async fn main() -> Result<()> {
     result
 }
 
+/// Whether the kitty keyboard enhancement flags were pushed at startup. Probed
+/// once in `setup_terminal`; `restore_terminal` reads this instead of querying
+/// the terminal again at shutdown — a second query leaks its Device Attributes
+/// reply (e.g. `61;1;21;22;28c`) to the shell after raw mode is off.
+static KEYBOARD_ENHANCED: AtomicBool = AtomicBool::new(false);
+
 fn setup_terminal() -> Result<Tui> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -81,6 +88,7 @@ fn setup_terminal() -> Result<Tui> {
     // modified keys like Ctrl+Tab / Ctrl+Shift+Tab arrive with their modifiers
     // instead of collapsing to a bare Tab. Only where the terminal supports it.
     let enhanced = supports_keyboard_enhancement().unwrap_or(false);
+    KEYBOARD_ENHANCED.store(enhanced, Ordering::Relaxed);
     if enhanced {
         execute!(
             stdout,
@@ -104,10 +112,12 @@ fn setup_terminal() -> Result<Tui> {
 }
 
 fn restore_terminal(terminal: &mut Tui) -> Result<()> {
-    disable_raw_mode()?;
-    if supports_keyboard_enhancement().unwrap_or(false) {
+    // Pop the flags we actually pushed (tracked at setup); do NOT re-probe here —
+    // querying the terminal at shutdown leaks its reply to the shell.
+    if KEYBOARD_ENHANCED.load(Ordering::Relaxed) {
         execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags)?;
     }
+    disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,

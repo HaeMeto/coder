@@ -136,8 +136,6 @@ pub enum Msg {
     PtyOutput(Vec<u8>),
     PtyExited,
 
-    /// Neutral status bar message (without the "Error:" prefix).
-    Status(String),
     Error(String),
     /// Show a transient toast notification.
     Toast(String),

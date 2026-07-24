@@ -187,7 +187,7 @@ fn render_notice(frame: &mut Frame, area: Rect, model: &Model, notice: &str) {
         return;
     }
     // Wrap width the message is laid out in (used to estimate its height).
-    let wrap_w = area.width.saturating_sub(4).min(70).max(1) as usize;
+    let wrap_w = area.width.saturating_sub(4).clamp(1, 70) as usize;
     let est_lines: u16 = notice
         .split('\n')
         .map(|para| {
