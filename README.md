@@ -10,9 +10,10 @@ Mouse clicks, git, autocomplete, LSP, themes and an embedded terminal — all in
 
 Written in Rust with [ratatui](https://ratatui.rs).
 
+<img src="assets/screenshot.png" alt="coder screenshot">
+
 </div>
 
----
 
 ## Why
 
