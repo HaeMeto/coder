@@ -35,6 +35,15 @@ pub struct GitEntry {
     pub state: GitState,
 }
 
+/// A previous commit shown in the HISTORY section of the Git panel.
+#[derive(Clone, Debug)]
+pub struct GitCommit {
+    /// Abbreviated commit hash (7 chars).
+    pub hash: String,
+    /// First line of the commit message.
+    pub summary: String,
+}
+
 #[derive(Default, Clone)]
 pub struct GitStatus {
     pub branch: Option<String>,
@@ -51,7 +60,12 @@ pub struct GitStatus {
     pub has_upstream: bool,
     /// Whether the repository has at least one remote configured.
     pub has_remote: bool,
+    /// Recent commits (newest first) shown under the HISTORY heading.
+    pub history: Vec<GitCommit>,
 }
+
+/// Number of recent commits loaded for the HISTORY section.
+const HISTORY_LIMIT: usize = 30;
 
 /// Collects the status of the git repository under `root` (blocking; call inside spawn_blocking).
 pub fn load_status(root: &Path) -> GitStatus {
@@ -100,6 +114,7 @@ pub fn load_status(root: &Path) -> GitStatus {
 
     let (ahead, behind, has_upstream) = ahead_behind(&repo);
     let has_remote = repo.remotes().map(|r| !r.is_empty()).unwrap_or(false);
+    let history = load_history(&repo);
 
     GitStatus {
         branch,
@@ -110,7 +125,29 @@ pub fn load_status(root: &Path) -> GitStatus {
         behind,
         has_upstream,
         has_remote,
+        history,
     }
+}
+
+/// Walks back from HEAD collecting up to `HISTORY_LIMIT` recent commits (newest first).
+fn load_history(repo: &Repository) -> Vec<GitCommit> {
+    let mut walk = match repo.revwalk() {
+        Ok(w) => w,
+        Err(_) => return Vec::new(),
+    };
+    if walk.push_head().is_err() {
+        return Vec::new(); // no HEAD yet (empty repo)
+    }
+    let mut out = Vec::new();
+    for oid in walk.flatten().take(HISTORY_LIMIT) {
+        let Ok(commit) = repo.find_commit(oid) else {
+            continue;
+        };
+        let hash = oid.to_string().chars().take(7).collect();
+        let summary = commit.summary().unwrap_or("").to_string();
+        out.push(GitCommit { hash, summary });
+    }
+    out
 }
 
 /// Ahead/behind commit counts vs the upstream, and whether an upstream is set.

@@ -8,7 +8,7 @@ use crate::core::filetree::FileTree;
 use crate::core::highlight::{self, HlLine, Highlighter};
 use crate::core::text_input::TextInputState;
 use crate::core::theme::Theme;
-use crate::services::git::{GitEntry, GutterKind};
+use crate::services::git::{GitCommit, GitEntry, GutterKind};
 use crate::services::pty::PtySession;
 use crate::services::search::SearchMatch;
 
@@ -256,6 +256,8 @@ pub struct GitStatus {
     pub has_upstream: bool,
     /// Whether the repository has at least one remote configured.
     pub has_remote: bool,
+    /// Recent commits (newest first) shown under the HISTORY heading.
+    pub history: Vec<GitCommit>,
 }
 
 impl GitStatus {

@@ -38,6 +38,12 @@ pub enum GitRowKind {
         idx: usize,
         depth: usize,
     },
+    /// The "HISTORY" heading above the previous-commits list.
+    HistoryHeader,
+    /// A previous commit: `idx` into `history`.
+    Commit {
+        idx: usize,
+    },
     Info(&'static str),
 }
 
@@ -143,6 +149,14 @@ pub fn git_layout(model: &Model, area: Rect) -> GitLayout {
         }
         if g.staged.is_empty() && g.unstaged.is_empty() {
             rows.push(GitRowKind::Info("No changes"));
+        }
+        // Previous commits below the changes, separated by a divider.
+        if !g.history.is_empty() {
+            rows.push(GitRowKind::Separator);
+            rows.push(GitRowKind::HistoryHeader);
+            for idx in 0..g.history.len() {
+                rows.push(GitRowKind::Commit { idx });
+            }
         }
     }
 
@@ -363,7 +377,26 @@ fn git_row_line(model: &Model, kind: &GitRowKind, width: usize) -> Line<'static>
             let sel = g.selected == g.staged.len() + *idx;
             entry_line(model, &g.unstaged[*idx], false, sel, *depth, width)
         }
+        GitRowKind::HistoryHeader => header_line(" HISTORY".to_string(), th),
+        GitRowKind::Commit { idx } => commit_line(&g.history[*idx], th, width),
     }
+}
+
+/// A previous-commit row: short hash (dim) + summary, trimmed to the panel width.
+fn commit_line(c: &crate::services::git::GitCommit, th: &crate::core::theme::Theme, width: usize) -> Line<'static> {
+    let hash = format!(" {} ", c.hash);
+    let avail = width.saturating_sub(hash.chars().count());
+    let summary = if c.summary.chars().count() > avail {
+        let keep = avail.saturating_sub(1);
+        format!("{}…", c.summary.chars().take(keep).collect::<String>())
+    } else {
+        c.summary.clone()
+    };
+    Line::from(vec![
+        Span::styled(hash, Style::new().fg(th.accent)),
+        Span::styled(summary, Style::new().fg(th.fg_dim)),
+    ])
+    .style(Style::new().bg(th.bg_alt))
 }
 
 /// Bulk action row ("Stage All +" / "Unstage All -"); icon on the right at width-2 (aligned with entry).

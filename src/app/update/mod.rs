@@ -267,6 +267,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             behind,
             has_upstream,
             has_remote,
+            history,
         } => {
             // Close diff-mode tabs for files no longer in the change list (reverted /
             // committed). Their diff is gone, leaving a stale editor view otherwise.
@@ -301,6 +302,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             g.behind = behind;
             g.has_upstream = has_upstream;
             g.has_remote = has_remote;
+            g.history = history;
             let len = g.nav_len();
             if g.selected >= len {
                 g.selected = len.saturating_sub(1);

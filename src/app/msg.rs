@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use crossterm::event::{KeyEvent, MouseEvent};
 
-use crate::services::git::GitEntry;
+use crate::services::git::{GitCommit, GitEntry};
 use crate::services::lsp::{CompletionItem, LspHandle, RawDiagnostic, RawTextEdit, Token};
 use crate::services::pty::PtySession;
 use crate::services::search::SearchMatch;
@@ -49,6 +49,7 @@ pub enum Msg {
         behind: usize,
         has_upstream: bool,
         has_remote: bool,
+        history: Vec<GitCommit>,
     },
     SearchResults {
         query: String,

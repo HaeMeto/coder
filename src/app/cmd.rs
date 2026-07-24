@@ -236,6 +236,7 @@ fn send_git_status(root: &std::path::Path, tx: &UnboundedSender<Msg>) {
         behind: status.behind,
         has_upstream: status.has_upstream,
         has_remote: status.has_remote,
+        history: status.history,
     });
 }
 
