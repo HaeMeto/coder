@@ -17,8 +17,6 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
     if let Some(branch) = &model.sidebar.git.branch {
         left.push_str(&format!(" ⎇ {branch} "));
     }
-    // A fixed pointer to the editable shortcuts file (Alt+7 opens it in the editor).
-    left.push_str(" Shortcuts: Alt+7 ");
     // A diagnostic under the cursor takes over the rest of the message area.
     if let Some(diag) = model.diagnostic_at_cursor() {
         let tag = match diag.severity {
