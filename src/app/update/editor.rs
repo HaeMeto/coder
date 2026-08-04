@@ -4,6 +4,12 @@ use super::*;
 
 /// Applies an editor mutation and keeps the cursor visible.
 pub(super) fn edit(model: &mut Model, f: impl FnOnce(&mut Buffer)) -> Vec<Cmd> {
+    // Typing, motion and clipboard edits belong to the editor alone. While focus
+    // sits in the sidebar, terminal, find widget or commit box, a key that the
+    // focused widget ignored must never fall through into the buffer.
+    if model.focus != Focus::Editor {
+        return Vec::new();
+    }
     // Read-only notice tabs (binary / unreadable files) never accept edits.
     if model.active_notice().is_some() {
         return Vec::new();

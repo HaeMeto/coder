@@ -44,6 +44,15 @@ pub enum Action {
     NavDown,
     Activate,
 
+    // Git panel (Source Control)
+    /// Tab / Shift+Tab: move the keyboard between the commit box, the buttons
+    /// and the change list. The `isize` is the step through the zone order.
+    GitCycleZone(isize),
+    /// `a`: stage the selected change, or unstage it when it is already staged.
+    GitToggleStage,
+    /// `r`: revert the selected change back to its committed state.
+    GitRevertEntry,
+
     // File tree entry management (Files panel)
     NewFile,
     NewFolder,
@@ -120,6 +129,9 @@ fn resolve_git_commit(key: KeyEvent) -> Option<Action> {
     // The commit box is multi-line: the input widget consumes typing, motion, and
     // Enter (newline). Committing is button-only; Esc blurs back to the sidebar.
     match key.code {
+        // Tab moves on to the Fetch button (and the rest of the panel).
+        KeyCode::Tab => Some(Action::GitCycleZone(1)),
+        KeyCode::BackTab => Some(Action::GitCycleZone(-1)),
         KeyCode::Esc => Some(Action::Escape),
         _ => None,
     }
@@ -135,6 +147,13 @@ fn resolve_editor(key: KeyEvent, ctrl: bool, shift: bool) -> Option<Action> {
             KeyCode::Right => Some(Action::Move(Motion::WordRight, shift)),
             _ => None,
         };
+    }
+    // Alt+char is a shortcut (panel switching, …), not text: an unbound one is
+    // dropped rather than typed into the buffer.
+    if key.modifiers.contains(KeyModifiers::ALT)
+        && matches!(key.code, KeyCode::Char(_))
+    {
+        return None;
     }
     match key.code {
         KeyCode::Char(c) => Some(Action::Insert(c)),
@@ -155,13 +174,21 @@ fn resolve_editor(key: KeyEvent, ctrl: bool, shift: bool) -> Option<Action> {
     }
 }
 
-fn resolve_sidebar(key: KeyEvent, _ctrl: bool, _shift: bool) -> Option<Action> {
+fn resolve_sidebar(key: KeyEvent, ctrl: bool, _shift: bool) -> Option<Action> {
     // Entry management (new file/folder, delete, rename) is handled by the user
     // keybindings; only the fixed tree navigation keys remain here.
+    // A bare letter only: Ctrl+A / Alt+A are shortcuts, not panel commands.
+    let bare = !ctrl && !key.modifiers.contains(KeyModifiers::ALT);
     match key.code {
         KeyCode::Up => Some(Action::NavUp),
         KeyCode::Down => Some(Action::NavDown),
         KeyCode::Enter | KeyCode::Right => Some(Action::Activate),
+        // Git panel letter shortcuts. They are no-ops in the other panels (see
+        // `apply_action`), which have no letter keys of their own.
+        KeyCode::Char('a') if bare => Some(Action::GitToggleStage),
+        KeyCode::Char('r') if bare => Some(Action::GitRevertEntry),
+        KeyCode::Tab if bare => Some(Action::GitCycleZone(1)),
+        KeyCode::BackTab => Some(Action::GitCycleZone(-1)),
         KeyCode::Esc => Some(Action::Escape),
         _ => None,
     }

@@ -11,8 +11,8 @@ use ratatui::layout::Rect;
 
 use crate::app::cmd::Cmd;
 use crate::app::model::{
-    ContextMenu, Dialog, DialogAction, DialogKind, DragTarget, FindField, Focus, MenuItem, Model,
-    Panel, SearchField, Tab,
+    ContextMenu, Dialog, DialogAction, DialogKind, DragTarget, FindField, Focus, GitZone, MenuItem,
+    Model, Panel, SearchField, Tab,
 };
 use crate::app::msg::Msg;
 use crate::core::buffer::{Buffer, Cursor};
@@ -357,9 +357,9 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             cmds
         }
         Msg::GitCommitUndone { message } => {
-            let g = &mut model.sidebar.git;
-            g.commit.set_content(message); // moves caret to end
-            model.focus = Focus::GitCommit;
+            model.sidebar.git.commit.set_content(message); // moves caret to end
+            // Land in the commit box so the restored message can be edited.
+            set_git_zone(model, GitZone::Message);
             Vec::new()
         }
         Msg::SearchResults { query, matches } => {

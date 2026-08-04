@@ -235,6 +235,46 @@ pub struct SearchState {
 }
 
 
+/// Keyboard focus zone inside the Git panel, cycled with Tab.
+///
+/// The zone decides what Enter activates and which widget is drawn highlighted.
+/// `Message` is the one zone that also changes the app-level [`Focus`] (to
+/// `Focus::GitCommit`, so typing reaches the commit input); every other zone
+/// keeps `Focus::Sidebar`.
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GitZone {
+    /// The commit message box.
+    Message,
+    Fetch,
+    Pull,
+    Push,
+    Uncommit,
+    Commit,
+    /// The change / history list at the bottom of the panel.
+    #[default]
+    Files,
+}
+
+impl GitZone {
+    /// Tab order, top to bottom, wrapping back to the start.
+    const ORDER: [GitZone; 7] = [
+        GitZone::Message,
+        GitZone::Fetch,
+        GitZone::Pull,
+        GitZone::Push,
+        GitZone::Uncommit,
+        GitZone::Commit,
+        GitZone::Files,
+    ];
+
+    /// Steps `delta` places through [`GitZone::ORDER`], wrapping at both ends.
+    pub fn step(self, delta: isize) -> GitZone {
+        let n = GitZone::ORDER.len() as isize;
+        let cur = GitZone::ORDER.iter().position(|z| *z == self).unwrap_or(0) as isize;
+        GitZone::ORDER[(cur + delta).rem_euclid(n) as usize]
+    }
+}
+
 #[derive(Default)]
 pub struct GitStatus {
     pub branch: Option<String>,
@@ -255,6 +295,8 @@ pub struct GitStatus {
     pub has_remote: bool,
     /// Recent commits (newest first) shown under the HISTORY heading.
     pub history: Vec<GitCommit>,
+    /// Which part of the panel the keyboard is on (cycled with Tab).
+    pub zone: GitZone,
 }
 
 impl GitStatus {
@@ -1217,6 +1259,26 @@ impl Model {
             panel.ascii_icon()
         } else {
             panel.icon()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn git_zone_tab_order_wraps_both_ways() {
+        // Tab walks top to bottom and wraps back to the commit box.
+        assert_eq!(GitZone::Message.step(1), GitZone::Fetch);
+        assert_eq!(GitZone::Push.step(1), GitZone::Uncommit);
+        assert_eq!(GitZone::Commit.step(1), GitZone::Files);
+        assert_eq!(GitZone::Files.step(1), GitZone::Message);
+        // Shift+Tab is the exact inverse.
+        assert_eq!(GitZone::Message.step(-1), GitZone::Files);
+        assert_eq!(GitZone::Fetch.step(-1), GitZone::Message);
+        for z in GitZone::ORDER {
+            assert_eq!(z.step(1).step(-1), z);
         }
     }
 }

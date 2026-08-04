@@ -80,9 +80,12 @@ impl TextInputState {
     pub fn handle_key(&mut self, key: KeyEvent, multiline: bool) -> InputOutcome {
         use InputOutcome::{Changed, Ignored, Moved};
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
-            // Ctrl+char is a shortcut (Save, etc.) — never text.
-            KeyCode::Char(_) if ctrl => Ignored,
+            // Ctrl+char / Alt+char are shortcuts (Save, panel switching, …) —
+            // never text. Without the Alt case, Alt+2 would type "2" into this
+            // input instead of falling through to the panel shortcut.
+            KeyCode::Char(_) if ctrl || alt => Ignored,
             KeyCode::Char(c) => {
                 self.insert_char(c);
                 Changed

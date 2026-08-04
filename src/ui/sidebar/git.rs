@@ -6,7 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::app::model::{Focus, GitStatus, Model};
+use crate::app::model::{Focus, GitStatus, GitZone, Model};
 use crate::services::git::{GitEntry, GitState};
 use crate::ui::text_input::TextInput;
 
@@ -38,6 +38,8 @@ pub enum GitRowKind {
         idx: usize,
         depth: usize,
     },
+    /// Keyboard hint under the change list ("Stage/Unstage: a, Revert: r").
+    Hint,
     /// The "HISTORY" heading above the previous-commits list.
     HistoryHeader,
     /// A previous commit: `idx` into `history`.
@@ -94,6 +96,25 @@ const COMMIT_LABEL: &str = " Commit ";
 const DISABLED_FG: Color = Color::Rgb(140, 140, 140);
 const DISABLED_BG: Color = Color::Rgb(60, 60, 60);
 
+/// Style of a panel button. The keyboard-focused one swaps its foreground and
+/// background, which reads as a distinctly different colour in every theme and
+/// on the disabled (grey) buttons alike — where a highlight colour of its own
+/// would have to be picked per theme.
+fn button_style(th: &crate::core::theme::Theme, enabled: bool, focused: bool) -> Style {
+    let (fg, bg) = if enabled {
+        (th.statusbar_fg, th.accent)
+    } else {
+        (DISABLED_FG, DISABLED_BG)
+    };
+    let (fg, bg) = if focused { (bg, fg) } else { (fg, bg) };
+    let style = Style::new().fg(fg).bg(bg);
+    if focused {
+        style.add_modifier(Modifier::BOLD)
+    } else {
+        style
+    }
+}
+
 /// The Git panel layout computed once; shared by render and mouse hit-testing.
 pub struct GitLayout {
     pub rows: Vec<GitRowKind>,
@@ -149,6 +170,10 @@ pub fn git_layout(model: &Model, area: Rect) -> GitLayout {
         }
         if g.staged.is_empty() && g.unstaged.is_empty() {
             rows.push(GitRowKind::Info("No changes"));
+        } else {
+            // The row shortcuts, right under the last change and above the
+            // HISTORY divider. Only worth showing when there is a row to act on.
+            rows.push(GitRowKind::Hint);
         }
         // Previous commits below the changes, separated by a divider.
         if !g.history.is_empty() {
@@ -319,22 +344,21 @@ fn render_git_actions(frame: &mut Frame, area: Rect, l: &GitLayout, model: &Mode
 
     // Distinct backgrounds separate the cells; widths match the thirds used by
     // `action_at_col` so the visuals and hit-testing line up exactly.
-    let cell = |label: &str, enabled: bool, w: usize| -> Span<'static> {
-        let (fg, bg) = if enabled {
-            (th.statusbar_fg, th.accent)
-        } else {
-            (DISABLED_FG, DISABLED_BG)
-        };
-        Span::styled(format!("{label:^w$}"), Style::new().fg(fg).bg(bg))
+    let zone = g.zone;
+    let cell = |label: &str, enabled: bool, w: usize, z: GitZone| -> Span<'static> {
+        Span::styled(
+            format!("{label:^w$}"),
+            button_style(th, enabled, zone == z),
+        )
     };
 
     let gap = || Span::styled(" ", Style::new().bg(th.bg_alt));
     let spans = vec![
-        cell(&fetch_label, fetch_enabled, w0),
+        cell(&fetch_label, fetch_enabled, w0, GitZone::Fetch),
         gap(),
-        cell(&pull_label, pull_enabled, w1),
+        cell(&pull_label, pull_enabled, w1, GitZone::Pull),
         gap(),
-        cell(&push_label, push_enabled, w2),
+        cell(&push_label, push_enabled, w2, GitZone::Push),
     ];
     let p = Paragraph::new(Line::from(spans)).style(Style::new().bg(th.bg_alt));
     frame.render_widget(
@@ -376,6 +400,23 @@ fn git_row_line(model: &Model, kind: &GitRowKind, width: usize) -> Line<'static>
         GitRowKind::Unstaged { idx, depth } => {
             let sel = g.selected == g.staged.len() + *idx;
             entry_line(model, &g.unstaged[*idx], false, sel, *depth, width)
+        }
+        GitRowKind::Hint => {
+            // Drop the labels the panel is too narrow for rather than letting the
+            // line wrap into the next row.
+            let full = " Stage/Unstage: a, Revert: r";
+            let text = if full.chars().count() <= width {
+                full
+            } else if " a: stage, r: revert".chars().count() <= width {
+                " a: stage, r: revert"
+            } else {
+                ""
+            };
+            Line::from(Span::styled(
+                text.to_string(),
+                Style::new().fg(th.fg_dim).add_modifier(Modifier::ITALIC),
+            ))
+            .style(Style::new().bg(th.bg_alt))
         }
         GitRowKind::HistoryHeader => header_line(" HISTORY".to_string(), th),
         GitRowKind::Commit { idx } => commit_line(&g.history[*idx], th, width),
@@ -524,15 +565,11 @@ fn render_commit_box(frame: &mut Frame, area: Rect, l: &GitLayout, model: &Model
     let can_undo = g.can_undo_commit();
 
     // Same colors as the fetch/pull/push cells.
-    let cell = |label: &str, enabled: bool| -> Span<'static> {
-        let (fg, bg) = if enabled {
-            (th.statusbar_fg, th.accent)
-        } else {
-            (DISABLED_FG, DISABLED_BG)
-        };
+    let zone = g.zone;
+    let cell = |label: &str, enabled: bool, z: GitZone| -> Span<'static> {
         Span::styled(
             label.to_string(),
-            Style::new().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+            button_style(th, enabled, zone == z).add_modifier(Modifier::BOLD),
         )
     };
 
@@ -540,9 +577,9 @@ fn render_commit_box(frame: &mut Frame, area: Rect, l: &GitLayout, model: &Model
     let commit_w = COMMIT_LABEL.chars().count();
     let filler = width.saturating_sub(uncommit_w + commit_w).max(1);
     let spans = vec![
-        cell(UNCOMMIT_LABEL, can_undo),
+        cell(UNCOMMIT_LABEL, can_undo, GitZone::Uncommit),
         Span::styled(" ".repeat(filler), Style::new().bg(th.bg_alt)),
-        cell(COMMIT_LABEL, can_commit),
+        cell(COMMIT_LABEL, can_commit, GitZone::Commit),
     ];
 
     let btn = Paragraph::new(Line::from(spans)).style(Style::new().bg(th.bg_alt));

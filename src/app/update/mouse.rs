@@ -165,7 +165,7 @@ fn handle_find_hit(model: &mut Model, hit: ui::find::FindHit) -> Vec<Cmd> {
 fn mouse_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
     if rect_contains(a.activity, x, y) {
         if let Some(p) = ui::activity_bar::panel_at(a.activity, y) {
-            return select_panel(model, p);
+            return toggle_panel(model, p);
         }
         return Vec::new();
     }
@@ -258,30 +258,32 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
         }
         Panel::Git => {
             use ui::sidebar::GitHit;
+            // A click also moves the keyboard zone, so Tab continues from where
+            // the mouse left off instead of from a stale zone.
             match ui::sidebar::git_hit(model, a.sidebar, x, y) {
                 Some(GitHit::Entry(idx)) => {
                     model.sidebar.git.selected = idx;
-                    model.focus = Focus::Sidebar;
+                    set_git_zone(model, GitZone::Files);
                     activate_selection(model)
                 }
                 Some(GitHit::Stage(rel)) => {
-                    model.focus = Focus::Sidebar;
+                    set_git_zone(model, GitZone::Files);
                     vec![Cmd::GitStage(rel)]
                 }
                 Some(GitHit::Unstage(rel)) => {
-                    model.focus = Focus::Sidebar;
+                    set_git_zone(model, GitZone::Files);
                     vec![Cmd::GitUnstage(rel)]
                 }
                 Some(GitHit::StageAll) => {
-                    model.focus = Focus::Sidebar;
+                    set_git_zone(model, GitZone::Files);
                     vec![Cmd::GitStageAll]
                 }
                 Some(GitHit::UnstageAll) => {
-                    model.focus = Focus::Sidebar;
+                    set_git_zone(model, GitZone::Files);
                     vec![Cmd::GitUnstageAll]
                 }
                 Some(GitHit::Revert(rel)) => {
-                    model.focus = Focus::Sidebar;
+                    set_git_zone(model, GitZone::Files);
                     model.dialog = Some(Dialog::ask(
                         "Revert changes".to_string(),
                         format!(
@@ -292,59 +294,40 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
                     Vec::new()
                 }
                 Some(GitHit::CommitInput) => {
-                    model.focus = Focus::GitCommit;
-                    model.sidebar.git.commit.cursor_to_end();
+                    set_git_zone(model, GitZone::Message);
                     Vec::new()
                 }
                 Some(GitHit::Refresh) => {
-                    model.focus = Focus::Sidebar;
+                    set_git_zone(model, GitZone::Files);
                     model.notify("Refreshing…".to_string());
                     vec![Cmd::LoadGitStatus]
                 }
                 // The file icon opens the plain file, not the diff view.
                 Some(GitHit::OpenFile(rel)) => {
-                    model.focus = Focus::Sidebar;
+                    set_git_zone(model, GitZone::Files);
                     open_path(model, model.root.join(rel))
                 }
-                Some(GitHit::CommitButton) => git_commit(model),
+                // The buttons share their enabled/disabled rules with the
+                // keyboard, so both routes go through `git_button`.
+                Some(GitHit::CommitButton) => {
+                    set_git_zone(model, GitZone::Commit);
+                    git_button(model, GitZone::Commit)
+                }
                 Some(GitHit::UndoLastCommit) => {
-                    model.focus = Focus::Sidebar;
-                    // Disabled unless there is an unpushed commit to undo.
-                    if model.sidebar.git.can_undo_commit() {
-                        model.notify("Undoing last commit…".to_string());
-                        vec![Cmd::GitUndoLastCommit]
-                    } else {
-                        Vec::new()
-                    }
+                    set_git_zone(model, GitZone::Uncommit);
+                    git_button(model, GitZone::Uncommit)
                 }
                 Some(GitHit::Fetch) => {
-                    model.focus = Focus::Sidebar;
-                    if model.sidebar.git.has_remote {
-                        model.show_toast("Fetching…");
-                        vec![Cmd::GitFetch]
-                    } else {
-                        Vec::new()
-                    }
+                    set_git_zone(model, GitZone::Fetch);
+                    git_button(model, GitZone::Fetch)
                 }
                 Some(GitHit::Pull) => {
-                    model.focus = Focus::Sidebar;
-                    // Disabled without an upstream to pull from.
-                    if model.sidebar.git.has_upstream {
-                        model.show_toast("Pulling…");
-                        vec![Cmd::GitPull]
-                    } else {
-                        Vec::new()
-                    }
+                    set_git_zone(model, GitZone::Pull);
+                    git_button(model, GitZone::Pull)
                 }
                 Some(GitHit::Push) => {
-                    model.focus = Focus::Sidebar;
-                    // Disabled when there is nothing to push.
-                    if model.sidebar.git.can_push() {
-                        model.show_toast("Pushing…");
-                        vec![Cmd::GitPush]
-                    } else {
-                        Vec::new()
-                    }
+                    set_git_zone(model, GitZone::Push);
+                    git_button(model, GitZone::Push)
                 }
                 None => Vec::new(),
             }

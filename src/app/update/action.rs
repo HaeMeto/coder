@@ -100,6 +100,9 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
                 && model.active_buffer().is_some_and(|b| b.selection_is_multiline())
             {
                 edit(model, |b| b.dedent_selection())
+            } else if in_git_panel(model) {
+                // In the Git panel Shift+Tab walks the zones backwards, mirroring Tab.
+                git_cycle_zone(model, -1)
             } else {
                 cycle_tab(model, -1);
                 Vec::new()
@@ -178,6 +181,13 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         }
 
         // ----- Sidebar navigation -----
+        // In the Git panel the arrows drive the change list, so they stay put
+        // while a button holds the focus (the mouse wheel still scrolls it).
+        Action::NavUp | Action::NavDown
+            if in_git_panel(model) && model.sidebar.git.zone != GitZone::Files =>
+        {
+            Vec::new()
+        }
         Action::NavUp => {
             nav(model, -1);
             post_nav_persist(model)
@@ -186,7 +196,15 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
             nav(model, 1);
             post_nav_persist(model)
         }
+        // In the Git panel Enter presses whichever button holds the focus; on the
+        // change list (and every other panel) it opens the selected row.
+        Action::Activate if in_git_panel(model) => git_zone_activate(model),
         Action::Activate => activate_selection(model),
+
+        // ----- Git panel (Source Control) -----
+        Action::GitCycleZone(delta) => git_cycle_zone(model, delta),
+        Action::GitToggleStage => git_toggle_stage(model),
+        Action::GitRevertEntry => git_revert_entry(model),
 
         // ----- File tree entry management (Files panel only) -----
         Action::NewFile => on_selected_row(model, |m, i| new_entry_dialog(m, i, false)),
@@ -279,7 +297,9 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
                     model.focus = Focus::SearchInput;
                 }
                 Focus::SearchInput => model.focus = Focus::Editor,
-                Focus::GitCommit => model.focus = Focus::Sidebar,
+                // Esc leaves the commit box for the change list, the panel's
+                // resting zone.
+                Focus::GitCommit => set_git_zone(model, GitZone::Files),
                 Focus::Terminal => {
                     model.terminal.selection = None;
                 }
