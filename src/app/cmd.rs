@@ -34,6 +34,8 @@ pub enum Cmd {
     },
     /// Load the HEAD content of a file for the change gutter.
     LoadHeadText(PathBuf),
+    /// Build the patch of a history commit for its read-only "<hash> diff" tab.
+    LoadCommitDiff(String),
     LoadGitStatus,
     GitStage(String),
     GitUnstage(String),
@@ -342,6 +344,18 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
             tokio::task::spawn_blocking(move || {
                 let text = services::git::head_file(&path);
                 let _ = tx.send(Msg::HeadTextLoaded { path, text });
+            });
+        }
+        Cmd::LoadCommitDiff(hash) => {
+            tokio::task::spawn_blocking(move || {
+                match services::git::commit_diff(&root, &hash) {
+                    Ok(diff) => {
+                        let _ = tx.send(Msg::CommitDiffLoaded { hash, diff });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Msg::Error(format!("could not load commit diff: {e}")));
+                    }
+                }
             });
         }
         Cmd::LoadGitStatus => {

@@ -87,6 +87,9 @@ pub(super) fn find_step(model: &mut Model, delta: isize) {
 
 /// Replaces the current match with the replacement text, then advances.
 pub(super) fn find_replace_one(model: &mut Model) -> Vec<Cmd> {
+    if model.active_read_only() {
+        return Vec::new(); // generated content (a commit patch) is never rewritten
+    }
     let Some(i) = model.find.current else {
         return Vec::new();
     };
@@ -106,6 +109,9 @@ pub(super) fn find_replace_one(model: &mut Model) -> Vec<Cmd> {
 
 /// Replaces every match in the active buffer in a single undo step.
 pub(super) fn find_replace_all(model: &mut Model) -> Vec<Cmd> {
+    if model.active_read_only() {
+        return Vec::new(); // generated content (a commit patch) is never rewritten
+    }
     if model.find.query.is_empty() {
         return Vec::new();
     }

@@ -336,6 +336,45 @@ pub(super) fn open_diff(model: &mut Model, path: PathBuf) -> Vec<Cmd> {
     vec![Cmd::ReadFile(path)]
 }
 
+/// Opens the patch of a history commit as a read-only "<hash> diff" tab: focuses
+/// the tab if it is already open, otherwise asks git for the patch (the tab is
+/// created when `Msg::CommitDiffLoaded` arrives).
+pub(super) fn open_commit_diff(model: &mut Model, hash: String) -> Vec<Cmd> {
+    if let Some(i) = model.commit_diff_tab_index(&hash) {
+        model.active_tab = Some(i);
+        model.focus = Focus::Editor;
+        ensure_cursor_visible(model);
+        return Vec::new();
+    }
+    vec![Cmd::LoadCommitDiff(hash)]
+}
+
+/// Creates (or refreshes) the read-only diff tab holding a commit's changes.
+pub(super) fn show_commit_diff(
+    model: &mut Model,
+    hash: &str,
+    diff: &crate::services::git::CommitDiff,
+) {
+    let tab = Tab::commit_diff(hash, diff);
+    let i = match model.commit_diff_tab_index(hash) {
+        Some(i) => {
+            model.tabs[i] = tab;
+            i
+        }
+        None => {
+            model.tabs.push(tab);
+            model.tabs.len() - 1
+        }
+    };
+    model.active_tab = Some(i);
+    model.focus = Focus::Editor;
+    // The green/red backgrounds come from the parent-vs-commit diff: it has to be
+    // computed for the new tab before the first render.
+    model.invalidate_highlight();
+    model.mark_git_dirty();
+    ensure_cursor_visible(model);
+}
+
 pub(super) fn open_path_at(model: &mut Model, path: PathBuf, line: usize) -> Vec<Cmd> {
     if let Some(i) = model.tab_index_for(&path) {
         model.active_tab = Some(i);

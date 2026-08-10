@@ -42,6 +42,8 @@ pub enum GitRowKind {
     Hint,
     /// The "HISTORY" heading above the previous-commits list.
     HistoryHeader,
+    /// Keyboard hint under the HISTORY heading ("Show diff: Enter").
+    HistoryHint,
     /// A previous commit: `idx` into `history`.
     Commit {
         idx: usize,
@@ -179,6 +181,7 @@ pub fn git_layout(model: &Model, area: Rect) -> GitLayout {
         if !g.history.is_empty() {
             rows.push(GitRowKind::Separator);
             rows.push(GitRowKind::HistoryHeader);
+            rows.push(GitRowKind::HistoryHint);
             for idx in 0..g.history.len() {
                 rows.push(GitRowKind::Commit { idx });
             }
@@ -258,6 +261,15 @@ fn action_at_col(area: Rect, x: u16) -> Option<GitAction> {
 
 /// Position of the selected item (combined index) in the row list.
 fn selected_row_pos(g: &GitStatus, rows: &[GitRowKind]) -> usize {
+    // The combined index runs staged, then unstaged, then the history commits.
+    if let Some(commit_idx) = g.selected.checked_sub(g.changes_len()) {
+        for (pos, r) in rows.iter().enumerate() {
+            if matches!(r, GitRowKind::Commit { idx } if *idx == commit_idx) {
+                return pos;
+            }
+        }
+        return 0;
+    }
     let (want_staged, want_idx) = if g.selected < g.staged.len() {
         (true, g.selected)
     } else {
@@ -412,19 +424,24 @@ fn git_row_line(model: &Model, kind: &GitRowKind, width: usize) -> Line<'static>
             } else {
                 ""
             };
-            Line::from(Span::styled(
-                text.to_string(),
-                Style::new().fg(th.fg_dim).add_modifier(Modifier::ITALIC),
-            ))
-            .style(Style::new().bg(th.bg_alt))
+            hint_line(text, th)
         }
         GitRowKind::HistoryHeader => header_line(" HISTORY".to_string(), th),
-        GitRowKind::Commit { idx } => commit_line(&g.history[*idx], th, width),
+        GitRowKind::HistoryHint => hint_line(" Show diff: Enter", th),
+        GitRowKind::Commit { idx } => {
+            let sel = g.selected == g.changes_len() + *idx;
+            commit_line(&g.history[*idx], th, width, sel)
+        }
     }
 }
 
 /// A previous-commit row: short hash (dim) + summary, trimmed to the panel width.
-fn commit_line(c: &crate::services::git::GitCommit, th: &crate::core::theme::Theme, width: usize) -> Line<'static> {
+fn commit_line(
+    c: &crate::services::git::GitCommit,
+    th: &crate::core::theme::Theme,
+    width: usize,
+    selected: bool,
+) -> Line<'static> {
     let hash = format!(" {} ", c.hash);
     let avail = width.saturating_sub(hash.chars().count());
     let summary = if c.summary.chars().count() > avail {
@@ -433,11 +450,12 @@ fn commit_line(c: &crate::services::git::GitCommit, th: &crate::core::theme::The
     } else {
         c.summary.clone()
     };
+    let bg = if selected { th.selected_bg() } else { th.bg_alt };
     Line::from(vec![
         Span::styled(hash, Style::new().fg(th.accent)),
         Span::styled(summary, Style::new().fg(th.fg_dim)),
     ])
-    .style(Style::new().bg(th.bg_alt))
+    .style(Style::new().bg(bg))
 }
 
 /// Bulk action row ("Stage All +" / "Unstage All -"); icon on the right at width-2 (aligned with entry).
@@ -456,6 +474,15 @@ fn action_line(
         Span::styled(icon.to_string(), Style::new().fg(icon_color)),
         Span::raw(" "),
     ])
+    .style(Style::new().bg(th.bg_alt))
+}
+
+/// A dim italic keyboard hint row.
+fn hint_line(text: &str, th: &crate::core::theme::Theme) -> Line<'static> {
+    Line::from(Span::styled(
+        text.to_string(),
+        Style::new().fg(th.fg_dim).add_modifier(Modifier::ITALIC),
+    ))
     .style(Style::new().bg(th.bg_alt))
 }
 
@@ -698,6 +725,9 @@ pub fn git_hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<GitHit> {
                 Some(GitHit::Entry(g.staged.len() + *idx))
             }
         }
+        // A history row opens the commit's patch; its combined index sits after
+        // the change rows.
+        GitRowKind::Commit { idx } => Some(GitHit::Entry(g.changes_len() + *idx)),
         _ => None,
     }
 }

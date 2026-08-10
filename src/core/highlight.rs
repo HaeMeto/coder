@@ -529,6 +529,15 @@ mod tests {
     }
 
     #[test]
+    fn commit_diff_tabs_borrow_the_changed_files_syntax() {
+        // A commit's diff tab has no file of its own: it carries a synthetic
+        // `<hash>.<ext>` path so the code in it is colored like the file it
+        // came from.
+        let hl = Highlighter::for_path(Some(Path::new("2ea14b1.rs")));
+        assert_eq!(hl.syntax_name, "Rust");
+    }
+
+    #[test]
     fn incremental_matches_full_highlight() {
         let text = "# heading\n\n```rust\nfn main() {}\n```\n\nsome *text* here\n";
         // Baseline: highlight everything in one shot.

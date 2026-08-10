@@ -43,8 +43,7 @@ pub const ACTIVITY_WIDTH: u16 = 4;
 
 /// Gutter width based on the active buffer's line count.
 pub fn gutter_width(model: &Model) -> u16 {
-    let lines = model.active_buffer().map(|b| b.line_count()).unwrap_or(1);
-    let digits = lines.to_string().len() as u16;
+    let digits = model.max_gutter_number().to_string().len() as u16;
     // One extra column for the git change marker when the file is tracked.
     let git = if model.git_gutter() { 1 } else { 0 };
     (digits + 2).max(4) + git

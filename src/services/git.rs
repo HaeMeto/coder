@@ -436,6 +436,248 @@ pub fn deleted_blocks(old: &str, new: &str) -> Vec<(Option<usize>, Vec<String>)>
     out
 }
 
+/// What one row of a commit's diff view is: it decides the row's gutter number
+/// and how the editor styles it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CommitRow {
+    /// The author line at the top of the view.
+    Author,
+    /// The date / hash line under it.
+    Meta,
+    /// A line of the commit message.
+    Message,
+    /// A file heading ("model.rs  src/app/  +3 -1").
+    File,
+    /// The blank row that separates two hunks of the same file.
+    Gap,
+    /// A code line, carrying its line number in the commit's version of the file.
+    Line(usize),
+}
+
+/// The two sides of a commit's changes, laid out for the inline diff view.
+///
+/// Both strings carry the *same* commit header, file headings and gaps, so those
+/// rows diff as unchanged context and only the commit's real edits get a color:
+/// `new` becomes the tab's buffer (added lines, green) and `old` its HEAD text
+/// (removed lines, woven in red) — exactly how an uncommitted change is shown.
+pub struct CommitDiff {
+    /// The parent's side of every hunk.
+    pub old: String,
+    /// This commit's side of every hunk.
+    pub new: String,
+    /// What each line of `new` is (same length as its line count), so the editor
+    /// can number the code rows with the file's own line numbers and style the
+    /// heading rows.
+    pub rows: Vec<CommitRow>,
+    /// Extension of the file with the most changed lines, so the tab can pick a
+    /// syntax to highlight the code with.
+    pub syntax_ext: Option<String>,
+}
+
+/// Accumulates the two sides of the view line by line, keeping `rows` aligned
+/// with the lines of `new`.
+#[derive(Default)]
+struct ViewBuilder {
+    old: String,
+    new: String,
+    rows: Vec<CommitRow>,
+}
+
+impl ViewBuilder {
+    /// A row present on both sides: unchanged context, so it stays uncolored.
+    fn both(&mut self, text: &str, kind: CommitRow) {
+        push_line(&mut self.old, text);
+        push_line(&mut self.new, text);
+        self.rows.push(kind);
+    }
+
+    /// A line the commit removed: only the parent has it (woven in red).
+    fn removed(&mut self, text: &str) {
+        push_line(&mut self.old, text);
+    }
+
+    /// A line the commit added: only this side has it (green), numbered `lineno`.
+    fn added(&mut self, text: &str, lineno: usize) {
+        push_line(&mut self.new, text);
+        self.rows.push(CommitRow::Line(lineno));
+    }
+}
+
+/// Builds the inline diff view of a commit against its first parent.
+/// Blocking (git2) — call inside spawn_blocking.
+pub fn commit_diff(root: &Path, hash: &str) -> Result<CommitDiff, String> {
+    let repo = Repository::discover(root).map_err(|e| e.message().to_string())?;
+    let commit = repo
+        .revparse_single(hash)
+        .and_then(|o| o.peel_to_commit())
+        .map_err(|e| e.message().to_string())?;
+    let tree = commit.tree().map_err(|e| e.message().to_string())?;
+    // The root commit has no parent: diff against an empty tree so the whole
+    // commit shows up as additions.
+    let parent = commit.parent(0).ok().and_then(|p| p.tree().ok());
+    let diff = repo
+        .diff_tree_to_tree(parent.as_ref(), Some(&tree), None)
+        .map_err(|e| e.message().to_string())?;
+
+    let mut v = ViewBuilder::default();
+
+    // Who committed it, when, and the message — the header of the view.
+    let author = commit.author();
+    v.both(
+        &format!("{}  <{}>", author.name().unwrap_or(""), author.email().unwrap_or("")),
+        CommitRow::Author,
+    );
+    v.both(
+        &format!("{}  ·  {}", format_time(commit.time()), commit.id()),
+        CommitRow::Meta,
+    );
+    v.both("", CommitRow::Gap);
+    for line in commit.message().unwrap_or("").trim_end().lines() {
+        v.both(line, CommitRow::Message);
+    }
+
+    // The extension of the file with the most changed lines wins the syntax.
+    let mut best: Option<(usize, String)> = None;
+
+    for idx in 0..diff.deltas().len() {
+        let Some(delta) = diff.get_delta(idx) else {
+            continue;
+        };
+        let patch = git2::Patch::from_diff(&diff, idx).ok().flatten();
+        let (added, removed) = patch
+            .as_ref()
+            .and_then(|p| p.line_stats().ok())
+            .map(|(_, a, d)| (a, d))
+            .unwrap_or((0, 0));
+
+        v.both("", CommitRow::Gap);
+        v.both(&file_heading(&delta, added, removed), CommitRow::File);
+
+        let Some(patch) = patch else {
+            // No patch: a binary file, or one git could not diff as text.
+            v.both("    (binary file)", CommitRow::Message);
+            continue;
+        };
+        if let Some(ext) = delta
+            .new_file()
+            .path()
+            .or_else(|| delta.old_file().path())
+            .and_then(|p| p.extension())
+            .and_then(|e| e.to_str())
+            && best.as_ref().is_none_or(|(n, _)| added + removed > *n)
+        {
+            best = Some((added + removed, ext.to_string()));
+        }
+
+        for h in 0..patch.num_hunks() {
+            let Ok((_, line_count)) = patch.hunk(h) else {
+                continue;
+            };
+            // A blank row marks the lines skipped between two hunks; the jump in
+            // the line numbers says how many.
+            if h > 0 {
+                v.both("", CommitRow::Gap);
+            }
+            for l in 0..line_count {
+                let Ok(line) = patch.line_in_hunk(h, l) else {
+                    continue;
+                };
+                let text = String::from_utf8_lossy(line.content());
+                let text = text.strip_suffix('\n').unwrap_or(&text);
+                match (line.origin(), line.new_lineno()) {
+                    (' ', Some(n)) => v.both(text, CommitRow::Line(n as usize)),
+                    ('+', Some(n)) => v.added(text, n as usize),
+                    ('-', _) => v.removed(text),
+                    // "\ No newline at end of file" and friends: not content.
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    if v.old.is_empty() && v.new.is_empty() {
+        return Err("empty commit".to_string());
+    }
+    Ok(CommitDiff {
+        old: v.old,
+        new: v.new,
+        rows: v.rows,
+        syntax_ext: best.map(|(_, ext)| ext),
+    })
+}
+
+/// Appends `text` as one line, adding the line ending it may be missing (a
+/// file's last line comes without one, which would glue the next row onto it).
+fn push_line(out: &mut String, text: &str) {
+    out.push_str(text);
+    if !text.ends_with('\n') {
+        out.push('\n');
+    }
+}
+
+/// The heading above a file's hunks: name, its directory, and the line counts —
+/// "model.rs  src/app/  +3 -1".
+fn file_heading(delta: &git2::DiffDelta, added: usize, removed: usize) -> String {
+    let path = match delta.status() {
+        git2::Delta::Deleted => delta.old_file().path(),
+        _ => delta.new_file().path().or_else(|| delta.old_file().path()),
+    };
+    let path = path.unwrap_or(Path::new(""));
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let dir = match path.parent().map(|p| p.to_string_lossy().into_owned()) {
+        Some(d) if !d.is_empty() => format!("{d}/"),
+        _ => String::new(),
+    };
+    let what = match delta.status() {
+        git2::Delta::Added => "(new file)",
+        git2::Delta::Deleted => "(deleted)",
+        git2::Delta::Renamed | git2::Delta::Copied => "(renamed)",
+        _ => "",
+    };
+    // Two spaces between the parts, skipping the ones this file has nothing for
+    // (a file in the repo root has no directory, an edit has no status word).
+    [name.as_str(), dir.as_str(), what, &format!("+{added} -{removed}")]
+        .iter()
+        .filter(|p| !p.is_empty())
+        .cloned()
+        .collect::<Vec<&str>>()
+        .join("  ")
+}
+
+/// `git2::Time` as "YYYY-MM-DD HH:MM:SS +ZZZZ" in the commit's own timezone.
+fn format_time(t: git2::Time) -> String {
+    let offset_min = t.offset_minutes() as i64;
+    let local = t.seconds() + offset_min * 60;
+    let (y, m, d) = civil_from_days(local.div_euclid(86_400));
+    let secs = local.rem_euclid(86_400);
+    let (hh, mm, ss) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    let sign = if offset_min < 0 { '-' } else { '+' };
+    let off = offset_min.abs();
+    format!(
+        "{y:04}-{m:02}-{d:02} {hh:02}:{mm:02}:{ss:02} {sign}{:02}{:02}",
+        off / 60,
+        off % 60
+    )
+}
+
+/// Days since the Unix epoch -> (year, month, day). Howard Hinnant's
+/// `civil_from_days`, so no date crate is needed for the one timestamp we print.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
 /// Commits the changes in the index.
 pub fn commit(root: &Path, message: &str) -> Result<(), git2::Error> {
     let repo = Repository::discover(root)?;
@@ -527,5 +769,75 @@ mod tests {
     #[test]
     fn pure_addition_has_no_deleted_blocks() {
         assert!(deleted_blocks("a\nb\n", "a\nx\nb\n").is_empty());
+    }
+
+    #[test]
+    fn commit_diff_sides_share_context_and_split_changes() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let Ok(repo) = Repository::discover(root) else {
+            return; // not a checkout (packaged source)
+        };
+        let Some(head) = repo.head().ok().and_then(|h| h.target()) else {
+            return;
+        };
+        let d = commit_diff(root, &head.to_string()).unwrap();
+        // Both sides open with the same author/date header (unchanged context).
+        for side in [&d.old, &d.new] {
+            let mut head_lines = side.lines();
+            assert!(head_lines.next().unwrap().contains('@')); // author <email>
+            assert!(head_lines.next().unwrap().contains('·')); // date · full hash
+        }
+        // One row label per line of the view, so the gutter never runs off the end.
+        assert_eq!(d.rows.len(), d.new.lines().count());
+        // The code rows are numbered by the file, not by the view: the first one
+        // is a real line number and they only ever move forward within a file.
+        let numbers: Vec<usize> = d
+            .rows
+            .iter()
+            .filter_map(|r| match r {
+                CommitRow::Line(n) => Some(*n),
+                _ => None,
+            })
+            .collect();
+        assert!(!numbers.is_empty());
+        assert!(numbers.iter().all(|n| *n >= 1));
+        // Every heading row names a file and its line counts.
+        let headings: Vec<&str> = d
+            .rows
+            .iter()
+            .zip(d.new.lines())
+            .filter(|(r, _)| **r == CommitRow::File)
+            .map(|(_, l)| l)
+            .collect();
+        assert!(!headings.is_empty());
+        assert!(headings.iter().all(|h| h.contains(" +") && h.contains(" -")));
+        // The two sides differ only where the commit actually changed something,
+        // which is what paints the green/red backgrounds.
+        assert_ne!(d.old, d.new);
+        assert!(!gutter_marks(&d.old, &d.new).is_empty());
+        // Every line is terminated, so no two rows can run together.
+        assert!(d.old.ends_with('\n') && d.new.ends_with('\n'));
+    }
+
+    #[test]
+    fn commit_diff_rejects_an_unknown_revision() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        if Repository::discover(root).is_err() {
+            return;
+        }
+        assert!(commit_diff(root, "0000000").is_err());
+    }
+
+    #[test]
+    fn epoch_and_offset_format() {
+        assert_eq!(
+            format_time(git2::Time::new(0, 0)),
+            "1970-01-01 00:00:00 +0000"
+        );
+        // +03:00 shifts the wall clock forward by three hours.
+        assert_eq!(
+            format_time(git2::Time::new(1_700_000_000, 180)),
+            "2023-11-15 01:13:20 +0300"
+        );
     }
 }

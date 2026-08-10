@@ -7,6 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::app::model::{Diagnostic, DiffRow, Focus, Model};
+use crate::services::git::CommitRow;
 use crate::core::buffer::Cursor;
 use crate::core::theme::Theme;
 use crate::services::git::GutterKind;
@@ -79,6 +80,20 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
             None => lines.push(Line::from("")),
             Some(DiffRow::Real(row)) => {
                 let row = *row;
+                // A commit's diff view has rows that are not code: the header at
+                // the top, a heading per file, and the gaps between hunks.
+                if let Some(kind) = model.commit_row(row)
+                    && !matches!(kind, CommitRow::Line(_))
+                {
+                    lines.push(commit_row_line(
+                        model,
+                        kind,
+                        &buf.line_text(row),
+                        gutter_w,
+                        area.width as usize,
+                    ));
+                    continue;
+                }
                 let is_cursor_line = row == buf.cursor.line;
                 // A diagnostic on this line recolors its line number by severity.
                 let ln_style = if let Some(d) = best_by_line.get(&row) {
@@ -100,7 +115,13 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
                     spans.push(Span::styled(ch.to_string(), Style::new().fg(color)));
                 }
                 let num_w = (gutter_w as usize).saturating_sub(if git_on { 2 } else { 1 });
-                let gutter = format!("{:>num_w$} ", row + 1);
+                // A commit's diff view numbers its code by the file's own lines,
+                // not by the rows of the view.
+                let number = match model.commit_row(row) {
+                    Some(CommitRow::Line(n)) => n,
+                    _ => row + 1,
+                };
+                let gutter = format!("{number:>num_w$} ");
                 spans.push(Span::styled(gutter, ln_style));
 
                 // Highlighted text pieces (clipped by scroll_x).
@@ -331,6 +352,82 @@ fn real_display_index(display: &[DiffRow], line: usize) -> usize {
         .iter()
         .position(|r| matches!(r, DiffRow::Real(l) if *l == line))
         .unwrap_or(line)
+}
+
+/// A non-code row of a commit's diff view: the author/date/message header, a
+/// file heading, or the gap between two hunks. None of them belong to a file, so
+/// the gutter stays blank and the text is styled rather than syntax-highlighted.
+/// A file heading is drawn as a band across the full editor width, like the tab
+/// bar, so the files a commit touched are easy to pick out while scrolling.
+fn commit_row_line(
+    model: &Model,
+    kind: CommitRow,
+    text: &str,
+    gutter_w: u16,
+    width: usize,
+) -> Line<'static> {
+    let th = &model.theme;
+    let gutter = " ".repeat(gutter_w as usize);
+    let text_w = width.saturating_sub(gutter_w as usize);
+    if kind == CommitRow::File {
+        return file_heading_line(model, text, gutter, text_w);
+    }
+    let style = match kind {
+        CommitRow::Author => Style::new().fg(th.fg).add_modifier(Modifier::BOLD),
+        CommitRow::Message => Style::new().fg(th.fg),
+        _ => Style::new().fg(th.fg_dim),
+    };
+    let body: String = text.chars().take(text_w).collect();
+    Line::from(vec![Span::raw(gutter), Span::styled(body, style)])
+}
+
+/// The file heading band ("model.rs  src/app/  +3 -1"): name and directory in the
+/// accent color, with the file's line counts in the diff's own green and red.
+fn file_heading_line(model: &Model, text: &str, gutter: String, text_w: usize) -> Line<'static> {
+    let th = &model.theme;
+    let name_style = Style::new().fg(th.accent).add_modifier(Modifier::BOLD);
+    let mut spans = vec![Span::raw(gutter)];
+    match split_stats(text) {
+        // The counts trail the name, so they only need their own colors when the
+        // whole heading fits — otherwise it is clipped as one piece.
+        Some((head, added, removed))
+            if head.chars().count() + added.chars().count() + removed.chars().count() + 3
+                <= text_w =>
+        {
+            let used =
+                head.chars().count() + added.chars().count() + removed.chars().count() + 3;
+            spans.push(Span::styled(head.to_string(), name_style));
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(
+                added.to_string(),
+                Style::new().fg(th.git_added),
+            ));
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                removed.to_string(),
+                Style::new().fg(th.git_deleted),
+            ));
+            // Pad so the band reaches the right edge.
+            spans.push(Span::raw(" ".repeat(text_w - used)));
+        }
+        _ => {
+            let body: String = text.chars().take(text_w).collect();
+            spans.push(Span::styled(format!("{body:<text_w$}"), name_style));
+        }
+    }
+    Line::from(spans).style(Style::new().bg(th.bg_alt))
+}
+
+/// Splits a file heading into `(name and directory, "+added", "-removed")`, or
+/// `None` when it does not end in a pair of counts.
+fn split_stats(text: &str) -> Option<(&str, &str, &str)> {
+    let (head, stats) = text.rsplit_once("  ")?;
+    let (added, removed) = stats.split_once(' ')?;
+    let counted = |s: &str, sign: char| {
+        let mut chars = s.chars();
+        chars.next() == Some(sign) && s.len() > 1 && chars.all(|c| c.is_ascii_digit())
+    };
+    (counted(added, '+') && counted(removed, '-')).then_some((head, added, removed))
 }
 
 /// A removed (red) diff row: blank line-number gutter, `-` change marker, and the
@@ -600,5 +697,31 @@ fn overlay_selection(
                 cell.set_style(Style::new().bg(model.theme.selection));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_stats;
+
+    #[test]
+    fn heading_counts_are_split_off_for_coloring() {
+        assert_eq!(
+            split_stats("model.rs  src/app/  +62 -0"),
+            Some(("model.rs  src/app/", "+62", "-0"))
+        );
+        // A file in the repo root has no directory part.
+        assert_eq!(
+            split_stats("AGENTS.md  +5 -3"),
+            Some(("AGENTS.md", "+5", "-3"))
+        );
+        // A status word stays with the name.
+        assert_eq!(
+            split_stats("git.rs  src/services/  (new file)  +12 -0"),
+            Some(("git.rs  src/services/  (new file)", "+12", "-0"))
+        );
+        // Anything that does not end in a pair of counts is left whole.
+        assert_eq!(split_stats("model.rs  src/app/"), None);
+        assert_eq!(split_stats("plain heading"), None);
     }
 }

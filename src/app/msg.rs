@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use crossterm::event::{KeyEvent, MouseEvent};
 
 use crate::core::highlight::HlLine;
-use crate::services::git::{GitCommit, GitEntry};
+use crate::services::git::{CommitDiff, GitCommit, GitEntry};
 use crate::services::lsp::{CompletionItem, LspHandle, RawDiagnostic, RawTextEdit, Token};
 use crate::services::pty::PtySession;
 use crate::services::search::SearchMatch;
@@ -70,6 +70,11 @@ pub enum Msg {
     HeadTextLoaded {
         path: PathBuf,
         text: Option<String>,
+    },
+    /// The changes of a history commit, for its read-only "<hash> diff" tab.
+    CommitDiffLoaded {
+        hash: String,
+        diff: CommitDiff,
     },
     /// A file changed on disk (from the filesystem watcher).
     DiskChanged(PathBuf),

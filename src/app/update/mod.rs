@@ -183,6 +183,10 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             model.focus = Focus::Editor;
             Vec::new()
         }
+        Msg::CommitDiffLoaded { hash, diff } => {
+            show_commit_diff(model, &hash, &diff);
+            Vec::new()
+        }
         Msg::HeadTextLoaded { path, text } => {
             // Update every open tab for this file (a normal tab and its diff tab).
             for i in model.all_tabs_for(&path) {
@@ -314,7 +318,9 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                 .tabs
                 .iter()
                 .enumerate()
-                .filter(|(_, t)| t.diff_mode)
+                // A commit's diff tab is read-only history, not a live change —
+                // it must survive every status refresh.
+                .filter(|(_, t)| t.diff_mode && !t.read_only)
                 .filter_map(|(i, t)| {
                     let path = t.buffer.path.as_ref()?;
                     let in_list = staged
@@ -351,6 +357,9 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                 model
                     .tabs
                     .iter()
+                    // Generated tabs (a commit patch) have no file behind their
+                    // synthetic path — there is no HEAD text to load.
+                    .filter(|t| !t.read_only)
                     .filter_map(|t| t.buffer.path.clone())
                     .map(Cmd::LoadHeadText),
             );

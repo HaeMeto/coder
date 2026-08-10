@@ -66,9 +66,13 @@ pub(super) fn activate_selection(model: &mut Model) -> Vec<Cmd> {
         Panel::Git => {
             // Clicking a git entry opens the file as a diff-mode tab; changed lines
             // get a green/red background.
-            if let Some((entry, _)) = model.sidebar.git.entry_at(model.sidebar.git.selected) {
+            let sel = model.sidebar.git.selected;
+            if let Some((entry, _)) = model.sidebar.git.entry_at(sel) {
                 let path = entry.path.clone();
                 open_diff(model, path)
+            } else if let Some(commit) = model.sidebar.git.commit_at(sel) {
+                // A history row opens the commit's patch in a read-only tab.
+                open_commit_diff(model, commit.hash.clone())
             } else {
                 Vec::new()
             }

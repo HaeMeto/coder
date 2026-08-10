@@ -40,6 +40,16 @@ pub(super) fn edit(model: &mut Model, f: impl FnOnce(&mut Buffer)) -> Vec<Cmd> {
     }
 }
 
+/// Like [`edit`], but for changes to the *text*: refused on read-only tabs
+/// (generated content such as a commit patch). Cursor motion still goes through
+/// `edit`, so a read-only tab stays fully navigable — it just cannot be typed in.
+pub(super) fn mutate(model: &mut Model, f: impl FnOnce(&mut Buffer)) -> Vec<Cmd> {
+    if model.active_read_only() {
+        return Vec::new();
+    }
+    edit(model, f)
+}
+
 /// Applies the enabled format-on-save actions to the active buffer (before writing).
 pub(super) fn apply_format_on_save(model: &mut Model) {
     let s = &model.sidebar.settings;

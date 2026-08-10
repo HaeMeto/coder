@@ -53,8 +53,9 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         Action::SelectPanel(p) => select_panel(model, p),
         Action::ShowShortcuts => open_keybindings(model),
         Action::Save => {
-            // Read-only notice tabs (binary / unreadable) must never be written back.
-            if model.active_notice().is_some() {
+            // Read-only tabs (binary / unreadable notices, commit patches) must
+            // never be written back.
+            if model.active_notice().is_some() || model.active_read_only() {
                 return Vec::new();
             }
             // Cheap whitespace formatting runs synchronously first.
@@ -99,7 +100,7 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
             if model.focus == Focus::Editor
                 && model.active_buffer().is_some_and(|b| b.selection_is_multiline())
             {
-                edit(model, |b| b.dedent_selection())
+                mutate(model, |b| b.dedent_selection())
             } else if in_git_panel(model) {
                 // In the Git panel Shift+Tab walks the zones backwards, mirroring Tab.
                 git_cycle_zone(model, -1)
@@ -111,7 +112,7 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
 
         // ----- Editor -----
         Action::Insert(c) => {
-            let cmds = edit(model, |b| b.insert_char(c));
+            let cmds = mutate(model, |b| b.insert_char(c));
             // Auto-trigger completions while typing an identifier or after '.',
             // debounced ~400ms so a fast typist does not hit the server per key.
             if c.is_alphanumeric() || c == '_' || c == '.' {
@@ -119,37 +120,37 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
             }
             cmds
         }
-        Action::Newline => edit(model, |b| b.insert_newline()),
+        Action::Newline => mutate(model, |b| b.insert_newline()),
         // Tab indents a multi-line selection; otherwise it inserts a soft tab.
         Action::InsertTab => {
             if model.focus == Focus::Editor
                 && model.active_buffer().is_some_and(|b| b.selection_is_multiline())
             {
-                edit(model, |b| b.indent_selection())
+                mutate(model, |b| b.indent_selection())
             } else {
-                edit(model, |b| b.insert_str("    "))
+                mutate(model, |b| b.insert_str("    "))
             }
         }
         Action::Backspace => {
-            let cmds = edit(model, |b| b.backspace());
+            let cmds = mutate(model, |b| b.backspace());
             // Keep an open popup fresh as the prefix shrinks (debounced).
             if model.completion.is_some() {
                 model.schedule_autocomplete();
             }
             cmds
         }
-        Action::Delete => edit(model, |b| b.delete_forward()),
+        Action::Delete => mutate(model, |b| b.delete_forward()),
         Action::TriggerCompletion => super::lsp::request_completion(model),
         Action::Format => super::lsp::request_format(model, false),
         Action::SelectAll => edit(model, |b| b.select_all()),
-        Action::Undo => edit(model, |b| b.undo()),
-        Action::Redo => edit(model, |b| b.redo()),
+        Action::Undo => mutate(model, |b| b.undo()),
+        Action::Redo => mutate(model, |b| b.redo()),
         Action::Move(motion, extend) => {
             let (h, _) = editor_viewport(model);
             edit(model, |b| apply_motion(b, motion, extend, h))
         }
-        Action::MoveLineUp => edit(model, |b| b.move_lines(-1)),
-        Action::MoveLineDown => edit(model, |b| b.move_lines(1)),
+        Action::MoveLineUp => mutate(model, |b| b.move_lines(-1)),
+        Action::MoveLineDown => mutate(model, |b| b.move_lines(1)),
         Action::Copy => {
             if let Some(buf) = model.active_buffer()
                 && let Some(sel) = buf.selected_text() {
@@ -159,6 +160,8 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
                 }
             Vec::new()
         }
+        // Cut deletes, so on a read-only tab it degrades to a plain copy.
+        Action::Cut if model.active_read_only() => apply_action(model, Action::Copy),
         Action::Cut => {
             if let Some(buf) = model.active_buffer_mut()
                 && let Some(sel) = buf.selected_text() {
@@ -175,7 +178,7 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         Action::Paste => {
             let text = read_clipboard(model);
             if !text.is_empty() {
-                return edit(model, |b| b.insert_paste(&text));
+                return mutate(model, |b| b.insert_paste(&text));
             }
             Vec::new()
         }

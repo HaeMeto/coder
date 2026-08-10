@@ -8,7 +8,7 @@ use crate::core::filetree::FileTree;
 use crate::core::highlight::{self, HlLine};
 use crate::core::text_input::TextInputState;
 use crate::core::theme::Theme;
-use crate::services::git::{GitCommit, GitEntry, GutterKind};
+use crate::services::git::{CommitRow, GitCommit, GitEntry, GutterKind};
 use crate::services::pty::PtySession;
 use crate::services::search::SearchMatch;
 
@@ -180,6 +180,15 @@ pub struct Tab {
     /// shows this message centered instead of the (empty) buffer, and editing is
     /// disabled so the file is never overwritten.
     pub notice: Option<String>,
+    /// Tab bar label override, for tabs that are not a file on disk (a commit
+    /// patch). `None` = derive it from the buffer's file name.
+    pub label: Option<String>,
+    /// Generated content that must never be edited or saved (a commit patch).
+    pub read_only: bool,
+    /// What each buffer line of a commit's diff view is: the gutter shows the
+    /// file's own line numbers instead of this view's row count, and the heading
+    /// rows are styled rather than highlighted as code. Empty for a normal file.
+    pub commit_rows: Vec<CommitRow>,
 }
 
 impl Tab {
@@ -189,7 +198,34 @@ impl Tab {
             head_text: None,
             diff_mode: false,
             notice: None,
+            label: None,
+            read_only: false,
+            commit_rows: Vec::new(),
         }
+    }
+
+    /// A read-only diff tab for a history commit, titled "<hash> diff".
+    ///
+    /// It is an ordinary diff-mode tab: the commit's side of the changes is the
+    /// buffer and the parent's side is the "HEAD" text, so the same machinery that
+    /// paints an uncommitted change paints this one — added lines on a green
+    /// background, removed lines woven in red.
+    ///
+    /// The buffer gets a synthetic `<hash>.<ext>` path, never written (the tab is
+    /// read-only): it only picks the syntax the code is highlighted with, taken
+    /// from the file the commit changed most.
+    pub fn commit_diff(hash: &str, diff: &crate::services::git::CommitDiff) -> Self {
+        let name = match &diff.syntax_ext {
+            Some(ext) => format!("{hash}.{ext}"),
+            None => hash.to_string(),
+        };
+        let mut tab = Tab::new(Buffer::new(Some(std::path::PathBuf::from(name)), &diff.new));
+        tab.head_text = Some(diff.old.clone());
+        tab.commit_rows = diff.rows.clone();
+        tab.diff_mode = true;
+        tab.label = Some(format!("{hash} diff"));
+        tab.read_only = true;
+        tab
     }
 
     /// A read-only tab that just shows an error message (binary / unreadable file).
@@ -201,6 +237,9 @@ impl Tab {
 
     /// Tab bar label: file name, with a "(diff)" suffix for diff-mode tabs.
     pub fn title(&self) -> String {
+        if let Some(label) = &self.label {
+            return label.clone();
+        }
         let name = self.buffer.display_name();
         if self.diff_mode {
             format!("{name} (diff)")
@@ -300,9 +339,20 @@ pub struct GitStatus {
 }
 
 impl GitStatus {
-    /// Total number of keyboard-navigable items (staged + unstaged).
+    /// Total number of keyboard-navigable items: the changes followed by the
+    /// history commits, in the one combined index the selection uses.
     pub fn nav_len(&self) -> usize {
+        self.staged.len() + self.unstaged.len() + self.history.len()
+    }
+
+    /// Number of change rows — the combined index where the history starts.
+    pub fn changes_len(&self) -> usize {
         self.staged.len() + self.unstaged.len()
+    }
+
+    /// The history commit at a combined index, or `None` if it names a change row.
+    pub fn commit_at(&self, idx: usize) -> Option<&GitCommit> {
+        self.history.get(idx.checked_sub(self.changes_len())?)
     }
 
     /// Whether there is anything to push: a remote must exist and the branch is
@@ -1248,6 +1298,45 @@ impl Model {
         self.active_tab.map(|i| self.tabs[i].diff_mode).unwrap_or(false)
     }
 
+    /// The open "<hash> diff" tab for a commit, if any.
+    pub fn commit_diff_tab_index(&self, hash: &str) -> Option<usize> {
+        let label = format!("{hash} diff");
+        self.tabs.iter().position(|t| t.label.as_deref() == Some(label.as_str()))
+    }
+
+    /// What the active tab's buffer line `row` is, when it is a commit's diff
+    /// view: the gutter and the row styling follow from it. `None` for a file.
+    pub fn commit_row(&self, row: usize) -> Option<CommitRow> {
+        let i = self.active_tab?;
+        self.tabs[i].commit_rows.get(row).copied()
+    }
+
+    /// The largest number the gutter has to fit: the buffer's line count, or the
+    /// highest file line number in a commit's diff view (which skips lines, so it
+    /// can run past the number of rows shown).
+    pub fn max_gutter_number(&self) -> usize {
+        let Some(i) = self.active_tab else {
+            return 1;
+        };
+        let tab = &self.tabs[i];
+        if tab.commit_rows.is_empty() {
+            return tab.buffer.line_count();
+        }
+        tab.commit_rows
+            .iter()
+            .filter_map(|r| match r {
+                CommitRow::Line(n) => Some(*n),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(1)
+    }
+
+    /// Whether the active tab holds generated content that must not be edited.
+    pub fn active_read_only(&self) -> bool {
+        self.active_tab.map(|i| self.tabs[i].read_only).unwrap_or(false)
+    }
+
     /// The notice message of the active tab, if it is a read-only error tab.
     pub fn active_notice(&self) -> Option<&str> {
         let i = self.active_tab?;
@@ -1280,5 +1369,60 @@ mod tests {
         for z in GitZone::ORDER {
             assert_eq!(z.step(1).step(-1), z);
         }
+    }
+
+    fn entry(rel: &str) -> GitEntry {
+        GitEntry {
+            path: PathBuf::from(rel),
+            rel: rel.to_string(),
+            state: crate::services::git::GitState::Modified,
+        }
+    }
+
+    #[test]
+    fn selection_runs_changes_then_history() {
+        let mut g = GitStatus {
+            staged: vec![entry("a.rs")],
+            unstaged: vec![entry("b.rs"), entry("c.rs")],
+            ..GitStatus::default()
+        };
+        g.history = vec![
+            GitCommit {
+                hash: "aaaaaaa".to_string(),
+                summary: "first".to_string(),
+            },
+            GitCommit {
+                hash: "bbbbbbb".to_string(),
+                summary: "second".to_string(),
+            },
+        ];
+        assert_eq!(g.changes_len(), 3);
+        assert_eq!(g.nav_len(), 5);
+        // The change rows come first: they resolve as entries, not commits.
+        assert_eq!(g.entry_at(0).map(|(e, staged)| (e.rel.as_str(), staged)), Some(("a.rs", true)));
+        assert_eq!(g.entry_at(2).map(|(e, staged)| (e.rel.as_str(), staged)), Some(("c.rs", false)));
+        assert!(g.commit_at(2).is_none());
+        // The history follows, in order.
+        assert_eq!(g.commit_at(3).map(|c| c.hash.as_str()), Some("aaaaaaa"));
+        assert_eq!(g.commit_at(4).map(|c| c.hash.as_str()), Some("bbbbbbb"));
+        assert!(g.entry_at(4).is_none());
+        assert!(g.commit_at(5).is_none());
+    }
+
+    #[test]
+    fn commit_diff_tab_is_a_read_only_diff_tab() {
+        let diff = crate::services::git::CommitDiff {
+            old: "a\nb\n".to_string(),
+            new: "a\nB\n".to_string(),
+            rows: vec![CommitRow::Line(1), CommitRow::Line(2)],
+            syntax_ext: Some("rs".to_string()),
+        };
+        let tab = Tab::commit_diff("2ea14b1", &diff);
+        assert_eq!(tab.title(), "2ea14b1 diff");
+        assert!(tab.read_only);
+        assert!(tab.diff_mode); // green/red backgrounds, like an uncommitted change
+        assert_eq!(tab.head_text.as_deref(), Some("a\nb\n"));
+        // The synthetic path only picks the syntax the code is colored with.
+        assert_eq!(tab.buffer.path.as_deref(), Some(std::path::Path::new("2ea14b1.rs")));
     }
 }
