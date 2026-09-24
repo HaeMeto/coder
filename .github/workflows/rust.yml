@@ -5,6 +5,9 @@ on:
     tags:
       - "v*.*.*"
 
+permissions:
+  contents: write
+
 jobs:
   # Build .deb / .rpm inside a Debian 12 (bookworm) container so the produced
   # packages are linked against a low glibc (2.36) and run on Debian 12+ and
@@ -76,7 +79,7 @@ jobs:
           tag: ${{ github.ref }}
           release_name: "coder v${{ env.RELEASE_VERSION }}"
           body: ${{ steps.git-cliff.outputs.content }}
-          repo_token: ${{ secrets.RELEASE_TOKEN }}
+          repo_token: ${{ github.token }}
 
   # Plain binary tarballs/zips for every major OS/arch.
   binaries:
@@ -168,7 +171,7 @@ jobs:
           overwrite: true
           tag: ${{ github.ref }}
           release_name: "coder v${{ env.RELEASE_VERSION }}"
-          repo_token: ${{ secrets.RELEASE_TOKEN }}
+          repo_token: ${{ github.token }}
 
   # Static musl build for Alpine and very old-glibc distros. Kept best-effort
   # (continue-on-error) so it never blocks the other release assets.
@@ -217,4 +220,4 @@ jobs:
           overwrite: true
           tag: ${{ github.ref }}
           release_name: "coder v${{ env.RELEASE_VERSION }}"
-          repo_token: ${{ secrets.RELEASE_TOKEN }}
+          repo_token: ${{ github.token }}
