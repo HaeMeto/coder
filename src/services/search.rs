@@ -11,6 +11,8 @@ pub struct SearchMatch {
     pub rel: String,
     pub line_no: usize,
     pub line: String,
+    /// Byte ranges of the query's matches within `line`, for highlighting.
+    pub ranges: Vec<(usize, usize)>,
 }
 
 /// Builds a Regex from `query`. If `use_regex` is false the pattern is escaped
@@ -25,6 +27,40 @@ fn build_regex(query: &str, use_regex: bool, match_case: bool) -> Option<Regex> 
         .case_insensitive(!match_case)
         .build()
         .ok()
+}
+
+/// Every match of the search query in `text`, as [start, end) **char**
+/// indices (the editor's rope units), using the same regex rules as the
+/// workspace search. Pure; used to highlight the query in the open editor.
+pub fn match_ranges(
+    text: &str,
+    query: &str,
+    use_regex: bool,
+    match_case: bool,
+) -> Vec<(usize, usize)> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let Some(re) = build_regex(query, use_regex, match_case) else {
+        return Vec::new();
+    };
+    // Walk byte offsets once, converting to char offsets incrementally.
+    let mut out = Vec::new();
+    let (mut byte, mut chars) = (0usize, 0usize);
+    let mut to_char = |b: usize| {
+        chars += text[byte..b].chars().count();
+        byte = b;
+        chars
+    };
+    for m in re.find_iter(text) {
+        if m.start() == m.end() {
+            continue; // an empty regex match highlights nothing
+        }
+        let s = to_char(m.start());
+        let e = to_char(m.end());
+        out.push((s, e));
+    }
+    out
 }
 
 /// Builds the file walker. By default skips hidden (dot) files and .gitignore'd
@@ -81,11 +117,20 @@ pub fn search(
                 break;
             }
             if re.is_match(line) {
+                let shown: String = line.chars().take(200).collect();
+                // Ranges are found on the full line, then clipped to the
+                // shown (truncated) part; `shown` is a prefix so offsets agree.
+                let ranges = re
+                    .find_iter(line)
+                    .map(|m| (m.start(), m.end().min(shown.len())))
+                    .filter(|(s, e)| s < e)
+                    .collect();
                 results.push(SearchMatch {
                     path: path.to_path_buf(),
                     rel: rel.clone(),
                     line_no: i + 1,
-                    line: line.chars().take(200).collect(),
+                    line: shown,
+                    ranges,
                 });
             }
         }
@@ -262,5 +307,13 @@ mod tests {
         std::fs::remove_file(&path).ok();
         assert_eq!(count, 1);
         assert_eq!(out, "bar\r\nfoo\r\n");
+    }
+
+    #[test]
+    fn match_ranges_are_char_indices() {
+        // "é" is 2 bytes but 1 char: the second match must start at char 6.
+        let r = super::match_ranges("é foo foo", "foo", false, false);
+        assert_eq!(r, vec![(2, 5), (6, 9)]);
+        assert!(super::match_ranges("abc", "", false, false).is_empty());
     }
 }

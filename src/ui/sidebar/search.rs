@@ -177,9 +177,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
             ))
             .style(Style::new().bg(bg)),
         );
-        lines.push(
-            Line::from(Span::raw(m.line.trim().to_string())).style(Style::new().bg(bg).fg(th.fg)),
-        );
+        lines.push(Line::from(match_spans(m, th)).style(Style::new().bg(bg).fg(th.fg)));
     }
     let p = Paragraph::new(lines).style(Style::new().bg(th.bg_alt));
     frame.render_widget(p, area);
@@ -207,6 +205,31 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
             input_row(replace_row),
         );
     }
+}
+
+/// A result's matched line (trimmed) with every query match highlighted in
+/// the same color as the editor's find matches.
+fn match_spans(
+    m: &crate::services::search::SearchMatch,
+    th: &crate::core::theme::Theme,
+) -> Vec<Span<'static>> {
+    let line = m.line.as_str();
+    let start = line.len() - line.trim_start().len();
+    let end = start + line.trim().len();
+    let hl = Style::new().bg(th.find_match);
+    let mut spans = Vec::new();
+    let mut pos = start;
+    for &(s, e) in &m.ranges {
+        let (s, e) = (s.clamp(pos, end), e.clamp(pos, end));
+        if s >= e || !line.is_char_boundary(s) || !line.is_char_boundary(e) {
+            continue;
+        }
+        spans.push(Span::raw(line[pos..s].to_string()));
+        spans.push(Span::styled(line[s..e].to_string(), hl));
+        pos = e;
+    }
+    spans.push(Span::raw(line[pos..end].to_string()));
+    spans
 }
 
 /// Target of a mouse click in the search panel.
@@ -304,5 +327,21 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn result_line_highlights_matches_after_trimming() {
+        let th = crate::core::theme::Theme::default();
+        let m = crate::services::search::SearchMatch {
+            path: "/w/a.rs".into(),
+            rel: "a.rs".into(),
+            line_no: 1,
+            line: "    let foo = foo();".into(),
+            ranges: vec![(8, 11), (14, 17)],
+        };
+        let spans = match_spans(&m, &th);
+        let text: Vec<&str> = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, ["let ", "foo", " = ", "foo", "();"]);
+        assert_eq!(spans[1].style.bg, Some(th.find_match));
     }
 }

@@ -192,8 +192,18 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
         );
     }
     // Find matches paint over the selection so the active match's color wins.
+    // The Search panel's query is highlighted the same way while the panel is
+    // shown (the in-editor find widget wins when both are active).
     if model.find.open && !model.find.matches.is_empty() {
-        overlay_find_matches(frame, area, model, buf, gutter_w, display, disp_start);
+        let (m, cur) = (&model.find.matches, model.find.current);
+        overlay_find_matches(
+            frame, area, model, buf, gutter_w, display, disp_start, m, cur,
+        );
+    } else if !model.search_marks.is_empty() {
+        let (m, cur) = (&model.search_marks, model.current_search_mark());
+        overlay_find_matches(
+            frame, area, model, buf, gutter_w, display, disp_start, m, cur,
+        );
     }
 
     // Draw our own block cursor (only when the editor is focused). A manual
@@ -621,13 +631,14 @@ fn overlay_find_matches(
     gutter_w: u16,
     display: &[DiffRow],
     disp_start: usize,
+    matches: &[(usize, usize)],
+    current: Option<usize>,
 ) {
     let scroll_x = buf.scroll_x;
     let text_w = area.width.saturating_sub(gutter_w);
-    let current = model.find.current;
     let bufmut = frame.buffer_mut();
 
-    for (mi, &(s, e)) in model.find.matches.iter().enumerate() {
+    for (mi, &(s, e)) in matches.iter().enumerate() {
         if s >= e {
             continue;
         }

@@ -894,6 +894,13 @@ pub struct Model {
     /// reloaded, changed on disk, or its HEAD text (re)loaded). Consumed by the
     /// next `refresh_git_marks`.
     git_marks_dirty: bool,
+    /// Search-panel query matches in the active buffer ([start, end) char
+    /// indices), painted in the editor like find matches. See
+    /// `refresh_search_marks`.
+    pub search_marks: Vec<(usize, usize)>,
+    /// What `search_marks` was computed for: (tab, buffer version, query,
+    /// use_regex, match_case). Recomputed only when one of them changes.
+    search_marks_key: Option<(usize, u64, String, bool, bool)>,
     /// Removed line blocks for the active diff tab's inline view: `(anchor, lines)`
     /// renders `lines` right after buffer line `anchor` (`None` = before line 0).
     /// Empty unless the active tab is a diff tab. Recomputed with `active_git_marks`.
@@ -1039,6 +1046,8 @@ impl Model {
             active_git_marks: std::collections::HashMap::new(),
             active_git_marks_tab: None,
             git_marks_dirty: false,
+            search_marks: Vec::new(),
+            search_marks_key: None,
             active_deleted: Vec::new(),
             active_display: Vec::new(),
             active_display_key: None,
@@ -1178,6 +1187,7 @@ impl Model {
     /// drops the shown colors so text falls back to plain until the worker — which
     /// is told to reset its cache — returns fresh ones.
     pub fn invalidate_highlight(&mut self) {
+        self.search_marks_key = None;
         self.hl_reset = true;
         self.hl_sent = None;
         self.display_key = None;
@@ -1373,6 +1383,56 @@ impl Model {
     /// `git_marks_dirty` is set (save / reload / disk change / HEAD load); a plain
     /// edit leaves the last-computed markers frozen, so typing never runs the
     /// whole-file diff.
+    /// Recomputes `search_marks` for the active buffer while the Search panel
+    /// is shown with a query (VSCode-style: the workspace search's term is
+    /// highlighted in the editor too). Cleared otherwise. Pure, no IO; cached
+    /// by `search_marks_key` so it runs only when the buffer or query changes.
+    pub fn refresh_search_marks(&mut self) {
+        let s = &self.sidebar.search;
+        let shown = self.layout.sidebar_open && self.sidebar.active == Panel::Search;
+        let query = s.query.content();
+        let tab = self.active_tab.filter(|_| shown && !query.is_empty());
+        let Some(i) = tab else {
+            self.search_marks.clear();
+            self.search_marks_key = None;
+            return;
+        };
+        let buf = &self.tabs[i].buffer;
+        let key = (i, buf.version, query.to_string(), s.use_regex, s.match_case);
+        if self.search_marks_key.as_ref() == Some(&key) {
+            return;
+        }
+        self.search_marks = crate::services::search::match_ranges(
+            &buf.full_text(),
+            query,
+            s.use_regex,
+            s.match_case,
+        );
+        self.search_marks_key = Some(key);
+    }
+
+    /// Index into `search_marks` of the selected search result's match, when
+    /// that result is in the active buffer (painted like the current find match).
+    pub fn current_search_mark(&self) -> Option<usize> {
+        let s = &self.sidebar.search;
+        let m = s.results.get(s.selected)?;
+        let buf = &self.tabs[self.active_tab?].buffer;
+        if buf.path.as_deref() != Some(m.path.as_path()) {
+            return None;
+        }
+        let line = m.line_no.checked_sub(1)?;
+        if line >= buf.line_count() {
+            return None;
+        }
+        let (start, end) = (
+            buf.rope.line_to_char(line),
+            buf.rope.line_to_char(line) + buf.line_len(line),
+        );
+        self.search_marks
+            .iter()
+            .position(|&(a, _)| a >= start && a < end)
+    }
+
     pub fn refresh_git_marks(&mut self) {
         let Some(i) = self.active_tab else {
             self.active_git_marks.clear();
@@ -1694,6 +1754,38 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_query_is_marked_in_the_editor_only_while_the_panel_is_shown() {
+        let mut model = Model::new(std::env::temp_dir());
+        let path = PathBuf::from("/w/a.rs");
+        model
+            .tabs
+            .push(Tab::new(Buffer::new(Some(path.clone()), "foo\nbar foo\n")));
+        model.active_tab = Some(0);
+        model.sidebar.search.query.insert_paste("foo", false);
+        model.sidebar.search.results = vec![crate::services::search::SearchMatch {
+            path,
+            rel: "a.rs".into(),
+            line_no: 2,
+            line: "bar foo".into(),
+            ranges: vec![(4, 7)],
+        }];
+
+        model.layout.sidebar_open = true;
+        model.sidebar.active = Panel::Search;
+        model.refresh_search_marks();
+        assert_eq!(model.search_marks, vec![(0, 3), (8, 11)]);
+        assert_eq!(
+            model.current_search_mark(),
+            Some(1),
+            "the selected result's line"
+        );
+
+        model.sidebar.active = Panel::Files;
+        model.refresh_search_marks();
+        assert!(model.search_marks.is_empty());
+    }
 
     #[test]
     fn git_zone_tab_order_wraps_both_ways() {
