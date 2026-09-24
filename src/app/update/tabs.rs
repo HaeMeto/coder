@@ -94,6 +94,44 @@ pub(super) fn close_tab_with_dirty_check(model: &mut Model, i: usize) -> Vec<Cmd
     close_tab(model, i)
 }
 
+/// Bulk close from the tab context menu (Close Others/Right/Left/All). Tabs
+/// with unsaved changes are kept open (reported in a toast) rather than
+/// asking once per tab. `keep` — the tab the menu was opened on, when it
+/// survives — becomes the active tab.
+pub(super) fn close_tabs(model: &mut Model, indices: Vec<usize>, keep: Option<usize>) -> Vec<Cmd> {
+    let mut cmds = Vec::new();
+    let mut kept_dirty = 0;
+    let mut removed_before_keep = 0;
+    let mut sorted = indices;
+    sorted.sort_unstable_by(|a, b| b.cmp(a)); // highest first: indices stay valid
+    for i in sorted {
+        if i >= model.tabs.len() {
+            continue;
+        }
+        if model.tabs[i].buffer.dirty {
+            kept_dirty += 1;
+            continue;
+        }
+        if keep.is_some_and(|k| i < k) {
+            removed_before_keep += 1;
+        }
+        cmds.extend(close_tab(model, i));
+    }
+    if let Some(k) = keep
+        .map(|k| k - removed_before_keep)
+        .filter(|&k| k < model.tabs.len())
+    {
+        model.active_tab = Some(k);
+        model.invalidate_highlight();
+    }
+    if kept_dirty > 0 {
+        model.notify(format!(
+            "{kept_dirty} tab(s) with unsaved changes kept open"
+        ));
+    }
+    cmds
+}
+
 /// Closes the tab at the given index and fixes up the active tab. Returns a
 /// `didClose` for the language server when the last tab of the file is closed.
 pub(super) fn close_tab(model: &mut Model, i: usize) -> Vec<Cmd> {
@@ -790,5 +828,41 @@ mod preview_tests {
         preview(&mut model, PreviewKey::Diff("/w/a.rs".into()));
         load(&mut model, "/w/a.rs");
         assert!(model.tabs[0].preview && model.tabs[0].diff_mode);
+    }
+}
+
+#[cfg(test)]
+mod close_many_tests {
+    use super::*;
+
+    fn model_with(n: usize) -> Model {
+        let mut model = Model::new(std::env::temp_dir());
+        for i in 0..n {
+            let path = PathBuf::from(format!("/w/{i}.rs"));
+            model.tabs.push(Tab::new(Buffer::new(Some(path), "x\n")));
+        }
+        model.active_tab = Some(0);
+        model
+    }
+
+    fn names(model: &Model) -> Vec<String> {
+        model.tabs.iter().map(|t| t.title()).collect()
+    }
+
+    #[test]
+    fn close_others_keeps_the_clicked_tab_active() {
+        let mut model = model_with(4);
+        close_tabs(&mut model, vec![0, 1, 3], Some(2));
+        assert_eq!(names(&model), ["2.rs"]);
+        assert_eq!(model.active_tab, Some(0));
+    }
+
+    #[test]
+    fn dirty_tabs_survive_a_bulk_close() {
+        let mut model = model_with(3);
+        model.tabs[0].buffer.dirty = true;
+        close_tabs(&mut model, vec![0, 2], Some(1));
+        assert_eq!(names(&model), ["0.rs", "1.rs"]);
+        assert_eq!(model.active_tab, Some(1));
     }
 }

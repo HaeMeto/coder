@@ -1,4 +1,4 @@
-//! File-tree context menu (right-click). Floats over everything below the
+//! Right-click context menu (file tree or tab bar). Floats over everything below the
 //! dialog; while open it captures all keyboard/mouse input.
 
 use ratatui::Frame;
@@ -10,8 +10,8 @@ use ratatui::widgets::{Block, Clear, Paragraph};
 use crate::app::model::{ContextMenu, MenuItem, Model};
 
 /// Inner width: the longest "label + gap + shortcut" pair.
-fn inner_width() -> u16 {
-    MenuItem::ALL
+fn inner_width(items: &[MenuItem]) -> u16 {
+    items
         .iter()
         .map(|i| (i.label().chars().count() + i.shortcut().chars().count() + 4) as u16)
         .max()
@@ -20,8 +20,8 @@ fn inner_width() -> u16 {
 
 /// The menu rectangle: anchored at the click, shifted to stay on screen.
 pub fn menu_rect(m: &ContextMenu, term: Rect) -> Rect {
-    let width = (inner_width() + 2).min(term.width);
-    let height = (MenuItem::ALL.len() as u16 + 2).min(term.height);
+    let width = (inner_width(m.items()) + 2).min(term.width);
+    let height = (m.items().len() as u16 + 2).min(term.height);
     // Flip/shift back when the menu would run off the right or bottom edge.
     let x = m.x.min(term.width.saturating_sub(width));
     let y = m.y.min(term.height.saturating_sub(height));
@@ -53,7 +53,8 @@ pub fn render(frame: &mut Frame, model: &Model) {
         height: area.height.saturating_sub(2),
     };
     let w = inner.width as usize;
-    let lines: Vec<Line> = MenuItem::ALL
+    let lines: Vec<Line> = m
+        .items()
         .iter()
         .enumerate()
         .map(|(i, item)| {
@@ -92,7 +93,7 @@ pub fn hit(m: &ContextMenu, term: Rect, x: u16, y: u16) -> Option<MenuItem> {
         return None; // outside, or on the border rows
     }
     let idx = (y - area.y - 1) as usize;
-    MenuItem::ALL.get(idx).copied()
+    m.items().get(idx).copied()
 }
 
 #[cfg(test)]
@@ -126,5 +127,13 @@ mod tests {
         assert_eq!(hit(&m, TERM, r.x + 1, r.y), None); // top border
         assert_eq!(hit(&m, TERM, r.x + 1, r.y + r.height - 1), None); // bottom border
         assert_eq!(hit(&m, TERM, r.x + r.width + 2, r.y + 1), None); // outside
+    }
+
+    #[test]
+    fn tab_menu_lists_the_close_items() {
+        let m = ContextMenu::tab(0, 10, 5);
+        let r = menu_rect(&m, TERM);
+        assert_eq!(hit(&m, TERM, r.x + 1, r.y + 1), Some(MenuItem::CloseOthers));
+        assert_eq!(hit(&m, TERM, r.x + 1, r.y + 4), Some(MenuItem::CloseAll));
     }
 }

@@ -40,7 +40,7 @@ use dialog::{dialog_key, dialog_mouse, dialog_paste};
 use editor::*;
 use find::*;
 use git::*;
-use menu::{menu_key, menu_mouse, open_file_menu};
+use menu::{menu_key, menu_mouse, open_file_menu, open_tab_menu};
 use mouse::handle_mouse;
 use quickbar::{files_listed, open_quickbar, quickbar_key, quickbar_mouse, quickbar_paste};
 use search::*;

@@ -109,8 +109,17 @@ pub(super) fn handle_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
             }
             Vec::new()
         }
-        // Right-click on a file-tree row opens the context menu.
+        // Right-click on a tab opens the tab menu; on a file-tree row, the
+        // file menu.
         MouseEventKind::Down(MouseButton::Right) => {
+            if rect_contains(a.tabs, x, y)
+                && let Some(hit) = ui::tabs::tab_at(model, a.tabs, x, y)
+            {
+                let i = match hit {
+                    ui::tabs::TabHit::Select(i) | ui::tabs::TabHit::Close(i) => i,
+                };
+                return open_tab_menu(model, i, x, y);
+            }
             if a.sidebar_open
                 && model.sidebar.active == Panel::Files
                 && rect_contains(a.sidebar, x, y)

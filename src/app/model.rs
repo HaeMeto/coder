@@ -600,22 +600,34 @@ impl Dialog {
     }
 }
 
-/// An entry of the file-tree context menu.
+/// An entry of a right-click context menu (file tree or tab bar).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MenuItem {
     NewFile,
     NewFolder,
     Rename,
     Delete,
+    CloseOthers,
+    CloseRight,
+    CloseLeft,
+    CloseAll,
 }
 
 impl MenuItem {
     /// The items shown for a tree row, in order.
-    pub const ALL: [MenuItem; 4] = [
+    pub const FILE_TREE: [MenuItem; 4] = [
         MenuItem::NewFile,
         MenuItem::NewFolder,
         MenuItem::Rename,
         MenuItem::Delete,
+    ];
+
+    /// The items shown for a tab, in order.
+    pub const TAB: [MenuItem; 4] = [
+        MenuItem::CloseOthers,
+        MenuItem::CloseRight,
+        MenuItem::CloseLeft,
+        MenuItem::CloseAll,
     ];
 
     pub fn label(&self) -> &'static str {
@@ -624,6 +636,10 @@ impl MenuItem {
             MenuItem::NewFolder => "New Folder",
             MenuItem::Rename => "Rename",
             MenuItem::Delete => "Delete",
+            MenuItem::CloseOthers => "Close Others",
+            MenuItem::CloseRight => "Close Right",
+            MenuItem::CloseLeft => "Close Left",
+            MenuItem::CloseAll => "Close All",
         }
     }
 
@@ -634,14 +650,27 @@ impl MenuItem {
             MenuItem::NewFolder => "Ctrl+Shift+N",
             MenuItem::Rename => "F2",
             MenuItem::Delete => "Del",
+            MenuItem::CloseOthers
+            | MenuItem::CloseRight
+            | MenuItem::CloseLeft
+            | MenuItem::CloseAll => "",
         }
     }
 }
 
-/// Context menu opened by right-clicking a file-tree row. Captures all input
-/// while open, like `Dialog`.
+/// What a context menu was opened on; decides its items.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MenuKind {
+    FileTree,
+    Tab,
+}
+
+/// Context menu opened by right-clicking a file-tree row or a tab. Captures
+/// all input while open, like `Dialog`.
 pub struct ContextMenu {
-    /// The visible tree row the menu was opened on.
+    pub kind: MenuKind,
+    /// The visible tree row (`FileTree`) or tab index (`Tab`) the menu was
+    /// opened on.
     pub row: usize,
     pub selected: usize,
     /// Top-left corner requested by the click; clamped to the screen on render.
@@ -652,10 +681,26 @@ pub struct ContextMenu {
 impl ContextMenu {
     pub fn new(row: usize, x: u16, y: u16) -> Self {
         ContextMenu {
+            kind: MenuKind::FileTree,
             row,
             selected: 0,
             x,
             y,
+        }
+    }
+
+    /// The menu for the tab at index `tab`.
+    pub fn tab(tab: usize, x: u16, y: u16) -> Self {
+        ContextMenu {
+            kind: MenuKind::Tab,
+            ..ContextMenu::new(tab, x, y)
+        }
+    }
+
+    pub fn items(&self) -> &'static [MenuItem] {
+        match self.kind {
+            MenuKind::FileTree => &MenuItem::FILE_TREE,
+            MenuKind::Tab => &MenuItem::TAB,
         }
     }
 }

@@ -1,4 +1,4 @@
-//! File-tree context menu: opening, keyboard/mouse handling, item dispatch.
+//! Right-click context menus (file tree, tab bar): opening, keyboard/mouse handling, item dispatch.
 
 use super::*;
 
@@ -11,14 +11,21 @@ pub(super) fn open_file_menu(model: &mut Model, idx: usize, x: u16, y: u16) -> V
     Vec::new()
 }
 
+/// Opens the tab context menu (Close Others/Right/Left/All) for tab `idx`.
+pub(super) fn open_tab_menu(model: &mut Model, idx: usize, x: u16, y: u16) -> Vec<Cmd> {
+    model.context_menu = Some(ContextMenu::tab(idx, x + 1, y + 1));
+    Vec::new()
+}
+
 /// Handles keyboard input while the menu is open. Navigation/execute/close are
 /// its own; anything else falls through to `overlay_fallback` (Ctrl+Q/Ctrl+S,
 /// panel switches, ...) instead of being swallowed.
 pub(super) fn menu_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
-    if model.context_menu.is_none() {
+    let Some(menu) = model.context_menu.as_ref() else {
         return Vec::new();
-    }
-    let last = MenuItem::ALL.len() - 1;
+    };
+    let items = menu.items();
+    let last = items.len() - 1;
     match key.code {
         KeyCode::Up => {
             if let Some(m) = model.context_menu.as_mut() {
@@ -54,7 +61,7 @@ pub(super) fn menu_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
         }
         KeyCode::Enter => {
             let selected = model.context_menu.as_ref().map(|m| m.selected).unwrap_or(0);
-            let item = MenuItem::ALL[selected];
+            let item = items[selected];
             run_item(model, item)
         }
         KeyCode::Esc => {
@@ -89,7 +96,7 @@ pub(super) fn menu_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
     }
 }
 
-/// Closes the menu and opens the dialog for the chosen item.
+/// Closes the menu and runs the chosen item.
 fn run_item(model: &mut Model, item: MenuItem) -> Vec<Cmd> {
     let Some(menu) = model.context_menu.take() else {
         return Vec::new();
@@ -100,6 +107,13 @@ fn run_item(model: &mut Model, item: MenuItem) -> Vec<Cmd> {
         MenuItem::NewFolder => new_entry_dialog(model, row, true),
         MenuItem::Rename => rename_dialog(model, row),
         MenuItem::Delete => delete_dialog(model, row),
+        MenuItem::CloseOthers => {
+            let all = (0..model.tabs.len()).filter(|&i| i != row).collect();
+            close_tabs(model, all, Some(row))
+        }
+        MenuItem::CloseRight => close_tabs(model, (row + 1..model.tabs.len()).collect(), Some(row)),
+        MenuItem::CloseLeft => close_tabs(model, (0..row).collect(), Some(row)),
+        MenuItem::CloseAll => close_tabs(model, (0..model.tabs.len()).collect(), None),
     }
 }
 
