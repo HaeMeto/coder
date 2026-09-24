@@ -399,6 +399,8 @@ fn parse_key(s: &str) -> Option<KeyCode> {
         "end" => KeyCode::End,
         "pageup" => KeyCode::PageUp,
         "pagedown" => KeyCode::PageDown,
+        // `+` separates chord parts, so the plus key needs a name of its own.
+        "plus" => KeyCode::Char('+'),
         other => {
             if let Some(n) = other
                 .strip_prefix('f')
@@ -422,6 +424,7 @@ fn parse_key(s: &str) -> Option<KeyCode> {
 fn key_string(code: KeyCode) -> String {
     match code {
         KeyCode::Char(' ') => "space".into(),
+        KeyCode::Char('+') => "plus".into(),
         KeyCode::Char(c) => c.to_string(),
         KeyCode::Tab => "tab".into(),
         KeyCode::Enter => "enter".into(),
@@ -517,8 +520,12 @@ pub fn parse(text: &str) -> Keybindings {
             // Optional "<chord>, quick|locked" suffix overrides the default, so a
             // command may be locked behind the leader (or freed) on a per-command
             // basis: e.g. `format = "ctrl+alt+f, locked"`.
-            let (chord_part, locked_override) = match chord_str.split_once(',') {
-                Some((c, flag)) => (c.trim(), Some(flag.trim() == "locked")),
+            // Only a recognized flag after the *last* comma counts, so the
+            // comma key itself stays bindable (`"ctrl+,"`, `"ctrl+,, locked"`).
+            let (chord_part, locked_override) = match chord_str.rsplit_once(',') {
+                Some((c, flag)) if matches!(flag.trim(), "locked" | "quick") => {
+                    (c.trim(), Some(flag.trim() == "locked"))
+                }
                 _ => (chord_str, None),
             };
             if let Some(b) = Bindable::by_name(section, name)
@@ -565,12 +572,9 @@ pub fn to_toml(kb: &Keybindings) -> String {
             } else {
                 ""
             };
-            out.push_str(&format!(
-                "{name} = \"{chord}{suffix}\"\n",
-                name = b.name(),
-                chord = chord_of(b),
-                suffix = suffix
-            ));
+            // A TOML string literal, so a `"` or `\\` key is escaped properly.
+            let value = toml::Value::String(format!("{}{suffix}", chord_of(b)));
+            out.push_str(&format!("{name} = {value}\n", name = b.name()));
         }
     }
     out
@@ -584,7 +588,7 @@ pub fn save(kb: &Keybindings) {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let _ = std::fs::write(&path, to_toml(kb));
+    let _ = crate::services::fs::write_atomic(&path, to_toml(kb).as_bytes());
 }
 
 /// Loads the shortcuts, seeding the file with the defaults when it is missing so
@@ -595,6 +599,8 @@ pub fn load() -> Keybindings {
     };
     match std::fs::read_to_string(&path) {
         Ok(text) => parse(&text),
+        // Seed only a genuinely missing file; an unreadable one is left alone.
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Keybindings::default(),
         Err(_) => {
             let kb = Keybindings::default();
             save(&kb);
@@ -770,5 +776,43 @@ mod tests {
             matches!(locked_unlock, Some(Action::Quit)),
             "locked + unlock fires"
         );
+    }
+
+    #[test]
+    fn comma_key_is_bindable_with_and_without_a_flag() {
+        let kb = parse("[global]\nquit = \"ctrl+,\"\n");
+        assert!(matches!(
+            kb.resolve(ev(KeyCode::Char(','), KeyModifiers::CONTROL), Focus::Editor),
+            Some(Action::Quit)
+        ));
+        let kb = parse("[global]\nquit = \"ctrl+,, quick\"\n");
+        assert!(matches!(
+            kb.resolve(ev(KeyCode::Char(','), KeyModifiers::CONTROL), Focus::Editor),
+            Some(Action::Quit)
+        ));
+    }
+
+    #[test]
+    fn quote_and_backslash_keys_round_trip_through_toml() {
+        for key in ['"', '\\', '+'] {
+            let mut kb = Keybindings::default();
+            let chord = Chord {
+                code: KeyCode::Char(key),
+                ctrl: true,
+                shift: false,
+                alt: false,
+            };
+            kb.set(Bindable::Quit, chord, None);
+            let text = to_toml(&kb);
+            assert!(
+                text.parse::<toml::Table>().is_ok(),
+                "invalid TOML for {key:?}"
+            );
+            let back = parse(&text);
+            assert!(matches!(
+                back.resolve(ev(KeyCode::Char(key), KeyModifiers::CONTROL), Focus::Editor),
+                Some(Action::Quit)
+            ));
+        }
     }
 }

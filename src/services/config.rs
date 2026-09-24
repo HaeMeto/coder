@@ -182,18 +182,29 @@ pub fn parse(text: &str) -> Config {
 
 /// Loads the config. When the file is missing it is seeded on disk with the
 /// starter languages (see `seed`) and that seed is returned, so the languages
-/// always come from the file — nothing is injected at runtime.
-pub fn load() -> Config {
+/// always come from the file — nothing is injected at runtime. Also returns a
+/// message when the file exists but could not be read or is
+/// not valid TOML. Defaults are returned then, and the file is left alone —
+/// [`save`] also refuses to write over a file it can't parse, so a typo never
+/// costs the user their language sections.
+pub fn load_checked() -> (Config, Option<String>) {
     let Some(path) = config_path() else {
-        return Config::default();
+        return (Config::default(), None);
     };
     match std::fs::read_to_string(&path) {
-        Ok(text) => parse(&text),
-        Err(_) => {
+        Ok(text) => match text.parse::<toml::Table>() {
+            Ok(_) => (parse(&text), None),
+            Err(e) => (
+                Config::default(),
+                Some(format!("{}: {}", path.display(), e.message())),
+            ),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let seed = seed();
             save(&seed);
-            seed
+            (seed, None)
         }
+        Err(e) => (Config::default(), Some(format!("{}: {e}", path.display()))),
     }
 }
 
@@ -233,14 +244,49 @@ pub fn to_toml(config: &Config) -> String {
 }
 
 /// Writes the config to disk (creating the parent directory). Errors are ignored.
+///
+/// Never clobbers what it doesn't understand: when the existing file can't be
+/// read or isn't valid TOML (a hand-edit in progress), nothing is written; and
+/// top-level keys already in the file that `config` doesn't carry (a section
+/// that failed to parse as a language, a setting from a newer version) are
+/// kept as they are.
 pub fn save(config: &Config) {
     let Some(path) = config_path() else {
+        return;
+    };
+    let Some(text) = merged_toml(config, &path) else {
         return;
     };
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let _ = std::fs::write(&path, to_toml(config));
+    let _ = crate::services::fs::write_atomic(&path, text.as_bytes());
+}
+
+/// The text [`save`] would write to `path`, or `None` if writing would destroy
+/// content it can't parse.
+fn merged_toml(config: &Config, path: &std::path::Path) -> Option<String> {
+    let existing = match std::fs::read_to_string(path) {
+        Ok(text) => text.parse::<toml::Table>().ok()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(to_toml(config)),
+        Err(_) => return None,
+    };
+    let fresh = to_toml(config);
+    let mut table: toml::Table = fresh.parse().ok()?;
+    let mut extra = false;
+    for (key, value) in existing {
+        if !table.contains_key(&key) {
+            table.insert(key, value);
+            extra = true;
+        }
+    }
+    if !extra {
+        return Some(fresh);
+    }
+    // Re-serialize with the scalar settings ahead of every table, as TOML needs.
+    let (scalars, tables): (Vec<_>, Vec<_>) = table.into_iter().partition(|(_, v)| !v.is_table());
+    let ordered: toml::Table = scalars.into_iter().chain(tables).collect();
+    toml::to_string_pretty(&ordered).ok()
 }
 
 #[cfg(test)]
@@ -307,6 +353,31 @@ mod tests {
         cfg.ascii_icons = true;
         let restored = parse(&to_toml(&cfg));
         assert!(restored.ascii_icons);
+    }
+
+    #[test]
+    fn save_never_clobbers_an_unparseable_or_richer_file() {
+        let dir = std::env::temp_dir().join(format!("coder-config-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+
+        // Broken TOML: nothing written.
+        std::fs::write(&path, "theme = \"x\n[rust\n").unwrap();
+        assert!(merged_toml(&seed(), &path).is_none());
+
+        // A section that isn't a valid language survives a save of a config
+        // that doesn't know it.
+        std::fs::write(&path, "theme = \"x\"\n[weird]\nextensions = 5\n").unwrap();
+        let out = merged_toml(&seed(), &path).unwrap();
+        let t: toml::Table = out.parse().unwrap();
+        assert!(t.contains_key("weird"));
+        assert!(t.contains_key("rust"));
+
+        // Missing file: plain serialization.
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(merged_toml(&seed(), &path), Some(to_toml(&seed())));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -5,6 +5,10 @@ use std::path::{Path, PathBuf};
 use ignore::WalkBuilder;
 use regex::{NoExpand, Regex, RegexBuilder};
 
+/// Files larger than this are skipped by search, replace and the quickbar's
+/// file list, so a stray multi-GB log or dump is never read into memory.
+pub const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
 #[derive(Clone, Debug)]
 pub struct SearchMatch {
     pub path: PathBuf,
@@ -74,6 +78,65 @@ fn walker(root: &Path, search_hidden: bool) -> ignore::Walk {
         .build()
 }
 
+/// Whether a walked entry is a regular file worth reading: not a symlink (the
+/// walker doesn't follow links, so a linked file could point outside the
+/// workspace — and Replace All would then write there), and no larger than
+/// [`MAX_FILE_BYTES`].
+fn searchable_file(entry: &ignore::DirEntry) -> bool {
+    entry.file_type().is_some_and(|t| t.is_file())
+        && entry.metadata().is_ok_and(|m| m.len() <= MAX_FILE_BYTES)
+}
+
+/// Splits a line segment (as yielded by `split_inclusive('\n')`) into its body
+/// and terminator (`"\r\n"`, `"\n"` or `""` for a final unterminated line), so
+/// patterns see exactly the line text `str::lines` gives the search preview.
+fn split_terminator(seg: &str) -> (&str, &str) {
+    match seg.strip_suffix('\n') {
+        Some(t) => match t.strip_suffix('\r') {
+            Some(t) => (t, "\r\n"),
+            None => (t, "\n"),
+        },
+        None => (seg, ""),
+    }
+}
+
+/// Applies the replacement line by line — the same per-line view the search
+/// preview matches against, so `^`/`$`, `\s+` and CRLF endings behave exactly
+/// as the preview showed — preserving every line's original terminator.
+/// `only_line` (0-based) restricts it to a single line. Returns the new text
+/// and the number of replacements.
+fn replace_lines(
+    content: &str,
+    re: &Regex,
+    replace: &str,
+    use_regex: bool,
+    only_line: Option<usize>,
+) -> (String, usize) {
+    let mut out = String::with_capacity(content.len());
+    let mut count = 0usize;
+    for (i, seg) in content.split_inclusive('\n').enumerate() {
+        if only_line.is_some_and(|l| l != i) {
+            out.push_str(seg);
+            continue;
+        }
+        let (body, term) = split_terminator(seg);
+        let n = re.find_iter(body).count();
+        if n == 0 {
+            out.push_str(seg);
+            continue;
+        }
+        count += n;
+        let replaced = if use_regex {
+            re.replace_all(body, replace)
+        } else {
+            re.replace_all(body, NoExpand(replace))
+        };
+        out.push_str(&replaced);
+        out.push_str(term);
+    }
+    (out, count)
+}
+
 /// Searches for `query` under `root` (plain/regex via `use_regex`).
 /// The number of results is capped by `limit` (blocking; call inside spawn_blocking).
 pub fn search(
@@ -99,10 +162,10 @@ pub fn search(
         if results.len() >= limit {
             break;
         }
-        let path = entry.path();
-        if !path.is_file() {
+        if !searchable_file(&entry) {
             continue;
         }
+        let path = entry.path();
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(_) => continue, // skip binary files
@@ -145,8 +208,8 @@ pub fn search(
 pub fn list_files(root: &Path) -> Vec<PathBuf> {
     walker(root, false)
         .flatten()
-        .map(|e| e.path().to_path_buf())
-        .filter(|p| p.is_file())
+        .filter(searchable_file)
+        .map(|e| e.into_path())
         .collect()
 }
 
@@ -169,42 +232,21 @@ pub fn replace_in_line(
         Some(re) => re,
         None => return 0,
     };
+    // Same guard as the workspace walk: never write through a symlink, never
+    // load a huge file.
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.is_file() && m.len() <= MAX_FILE_BYTES => {}
+        _ => return 0,
+    }
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return 0,
     };
-    // Keep line terminators so unrelated lines round-trip byte-for-byte.
-    let segments: Vec<&str> = content.split_inclusive('\n').collect();
-    let Some(seg) = segments.get(line_no - 1).copied() else {
-        return 0;
-    };
-    // Split the terminator (\n or \r\n) off so the pattern sees only line text.
-    let (body, term) = match seg.strip_suffix('\n') {
-        Some(t) => match t.strip_suffix('\r') {
-            Some(t) => (t, "\r\n"),
-            None => (t, "\n"),
-        },
-        None => (seg, ""),
-    };
-    let count = re.find_iter(body).count();
-    if count == 0 {
-        return 0;
-    }
-    let replaced = if use_regex {
-        re.replace_all(body, replace)
-    } else {
-        re.replace_all(body, NoExpand(replace))
-    };
-    let new_line = format!("{replaced}{term}");
-    let mut new_content = String::with_capacity(content.len());
-    for (i, s) in segments.iter().enumerate() {
-        if i == line_no - 1 {
-            new_content.push_str(&new_line);
-        } else {
-            new_content.push_str(s);
-        }
-    }
-    if new_content != content && std::fs::write(path, new_content.as_bytes()).is_ok() {
+    let (new_content, count) = replace_lines(&content, &re, replace, use_regex, Some(line_no - 1));
+    if count > 0
+        && new_content != content
+        && crate::services::fs::write_atomic(path, new_content.as_bytes()).is_ok()
+    {
         count
     } else {
         0
@@ -238,24 +280,19 @@ pub fn replace_all(
     let walker = walker(root, search_hidden);
 
     for entry in walker.flatten() {
-        let path = entry.path();
-        if !path.is_file() {
+        if !searchable_file(&entry) {
             continue;
         }
+        let path = entry.path();
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(_) => continue, // skip binary files
         };
-        let count = re.find_iter(&content).count();
+        let (new, count) = replace_lines(&content, &re, replace, use_regex, None);
         if count == 0 {
             continue;
         }
-        let new = if use_regex {
-            re.replace_all(&content, replace)
-        } else {
-            re.replace_all(&content, NoExpand(replace))
-        };
-        if new != content && std::fs::write(path, new.as_bytes()).is_ok() {
+        if new != content && crate::services::fs::write_atomic(path, new.as_bytes()).is_ok() {
             total += count;
             changed.push(path.to_path_buf());
         }
@@ -307,6 +344,50 @@ mod tests {
         std::fs::remove_file(&path).ok();
         assert_eq!(count, 1);
         assert_eq!(out, "bar\r\nfoo\r\n");
+    }
+
+    #[test]
+    fn replace_all_works_per_line_like_the_preview() {
+        let dir = std::env::temp_dir().join(format!(
+            "coder-search-replace-all-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.txt");
+        std::fs::write(&file, "foo  \r\nbar\nfoo\n").unwrap();
+        // `\s+$` must not eat the line break (a whole-file regex would join
+        // lines), and `$` must match before a CRLF.
+        let (changed, n) = replace_all(&dir, r"\s+$", "", true, true, false);
+        assert_eq!(n, 1);
+        assert_eq!(changed, vec![file.clone()]);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "foo\r\nbar\nfoo\n");
+        // `^` anchors at each line start.
+        let (_, n) = replace_all(&dir, "^foo", "X", true, true, false);
+        assert_eq!(n, 2);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "X\r\nbar\nX\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn replace_all_skips_symlinked_files() {
+        let base = std::env::temp_dir().join(format!("coder-search-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let ws = base.join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        let outside = base.join("outside.txt");
+        std::fs::write(&outside, "foo\n").unwrap();
+        std::os::unix::fs::symlink(&outside, ws.join("link.txt")).unwrap();
+        let (changed, n) = replace_all(&ws, "foo", "X", false, true, false);
+        assert_eq!((changed.len(), n), (0, 0));
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "foo\n");
+        assert_eq!(
+            replace_in_line(&ws.join("link.txt"), 1, "foo", "X", false, true),
+            0
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

@@ -117,6 +117,13 @@ pub struct RawTextEdit {
     pub new_text: String,
 }
 
+/// Largest JSON-RPC body the client accepts; a bigger Content-Length ends
+/// the session instead of allocating whatever the server claims.
+const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
+/// Longest header line accepted before the session is considered corrupt.
+const MAX_HEADER_LINE: u64 = 8 * 1024;
+
 /// What an in-flight request id is waiting for.
 enum PendingKind {
     Initialize,
@@ -195,7 +202,7 @@ async fn run_server(
             maybe_intent = from_client.recv() => {
                 let Some(intent) = maybe_intent else { break }; // handle dropped -> stop
                 if !initialized {
-                    queue.push(intent);
+                    enqueue(&mut queue, intent);
                     continue;
                 }
                 if send_intent(&mut stdin, intent, &mut next_id, &mut pending).await.is_err() {
@@ -218,8 +225,41 @@ async fn run_server(
     let _ = tx.send(Msg::LspExited { language });
 }
 
+/// Queues an intent issued before the server finished initializing. With full-
+/// text sync only the latest `didChange` of a document matters, so an earlier
+/// queued one for the same uri is dropped (unless an open/close of that uri
+/// sits in between); likewise only the newest completion request is kept.
+/// This bounds the queue by the number of open documents rather than by how
+/// long the server takes to start.
+fn enqueue(queue: &mut Vec<LspClientMsg>, intent: LspClientMsg) {
+    match &intent {
+        LspClientMsg::DidChange { uri, .. } => {
+            for i in (0..queue.len()).rev() {
+                match &queue[i] {
+                    LspClientMsg::DidChange { uri: u, .. } if u == uri => {
+                        queue.remove(i);
+                        break;
+                    }
+                    LspClientMsg::DidOpen { uri: u, .. } | LspClientMsg::DidClose { uri: u }
+                        if u == uri =>
+                    {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        LspClientMsg::Completion { .. } => {
+            queue.retain(|q| !matches!(q, LspClientMsg::Completion { .. }));
+        }
+        _ => {}
+    }
+    queue.push(intent);
+}
+
 /// Reads Content-Length frames off the server's stdout and forwards each parsed
-/// JSON value. Returns on EOF or a read/frame error (which ends the session).
+/// JSON value. Returns on EOF or a read/frame error (which ends the session),
+/// including an over-long header line or a body above [`MAX_FRAME_BYTES`].
 async fn reader_task(stdout: tokio::process::ChildStdout, frame_tx: UnboundedSender<Value>) {
     let mut reader = BufReader::new(stdout);
     loop {
@@ -227,10 +267,17 @@ async fn reader_task(stdout: tokio::process::ChildStdout, frame_tx: UnboundedSen
         let mut content_len: Option<usize> = None;
         loop {
             let mut line = String::new();
-            match reader.read_line(&mut line).await {
+            match (&mut reader)
+                .take(MAX_HEADER_LINE)
+                .read_line(&mut line)
+                .await
+            {
                 Ok(0) => return, // EOF
                 Ok(_) => {}
                 Err(_) => return,
+            }
+            if !line.ends_with('\n') {
+                return; // header line over the cap (or EOF mid-line)
             }
             let trimmed = line.trim_end();
             if trimmed.is_empty() {
@@ -241,6 +288,9 @@ async fn reader_task(stdout: tokio::process::ChildStdout, frame_tx: UnboundedSen
             }
         }
         let Some(len) = content_len else { continue };
+        if len > MAX_FRAME_BYTES {
+            return;
+        }
         let mut buf = vec![0u8; len];
         if reader.read_exact(&mut buf).await.is_err() {
             return;
@@ -263,7 +313,11 @@ async fn handle_frame(
     language: &str,
     initialized: &mut bool,
 ) -> bool {
-    let id = frame.get("id").and_then(|v| v.as_i64());
+    // JSON-RPC ids may be numbers or strings. Our own requests always use
+    // integers; a server->client request's id is echoed back verbatim.
+    let id = frame
+        .get("id")
+        .filter(|v| v.is_i64() || v.is_u64() || v.is_string());
     let method = frame.get("method").and_then(|m| m.as_str());
 
     match (id, method) {
@@ -287,7 +341,7 @@ async fn handle_frame(
         (None, Some(_)) => false, // other notifications ignored
         // Response to one of our requests.
         (Some(id), None) => {
-            let Some(kind) = pending.remove(&id) else {
+            let Some(kind) = id.as_i64().and_then(|id| pending.remove(&id)) else {
                 return false;
             };
             match kind {
@@ -555,13 +609,34 @@ fn parse_text_edits(frame: &Value) -> Vec<RawTextEdit> {
 
 // ----- file:// URI <-> path (minimal percent-encoding) -----
 
-/// Converts a filesystem path to a `file://` URI, percent-encoding as needed.
+/// A Windows path `C:\a\b` becomes `file:///C:/a/b`.
+/// A Windows path `C:\\a\\b` becomes `file:///C:/a/b`.
 pub fn path_to_uri(path: &Path) -> String {
+    path_str_to_uri(&path.to_string_lossy(), cfg!(windows))
+}
+
+/// [`path_to_uri`] over a path string; `windows` selects `\`-separated,
+/// drive-letter paths. Split out so both flavors are testable on any host.
+fn path_str_to_uri(path: &str, windows: bool) -> String {
     let mut s = String::from("file://");
-    for byte in path.to_string_lossy().as_bytes() {
-        let b = *byte;
-        // Unreserved per RFC 3986, plus '/' which stays a path separator.
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'/') {
+    let path = if windows {
+        let p = path.replace('\\', "/");
+        // A drive path needs the empty authority's slash in front: file:///C:/.
+        if p.starts_with('/') {
+            p
+        } else {
+            format!("/{p}")
+        }
+    } else {
+        path.to_string()
+    };
+    let bytes = path.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        // Unreserved per RFC 3986, plus '/' which stays a path separator, and
+        // the colon after a Windows drive letter (`/C:`).
+        let drive_colon = windows && b == b':' && i == 2 && bytes[1].is_ascii_alphabetic();
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'/') || drive_colon
+        {
             s.push(b as char);
         } else {
             s.push('%');
@@ -571,26 +646,62 @@ pub fn path_to_uri(path: &Path) -> String {
     s
 }
 
-/// Parses a `file://` URI back into a path, decoding percent-escapes.
+/// Parses a `file://` URI back into a path, decoding percent-escapes. An
+/// invalid escape (`%zz`, a truncated `%4`) is kept literally rather than
+/// failing the whole URI.
 pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
-    let rest = uri.strip_prefix("file://")?;
-    let bytes = rest.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    uri_to_path_with(uri, cfg!(windows))
+}
+
+fn uri_to_path_with(uri: &str, windows: bool) -> Option<PathBuf> {
+    let rest = uri
+        .strip_prefix("file://")
+        .or_else(|| uri.strip_prefix("FILE://"))?;
+    // Only a local (empty or `localhost`) authority names a path on this machine.
+    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+    let decoded = percent_decode(rest.as_bytes());
+    if windows {
+        let s = String::from_utf8_lossy(&decoded).into_owned();
+        // `/C:/a` -> `C:/a`; a UNC-less rooted path keeps its leading slash.
+        let b = s.as_bytes();
+        let s = if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' {
+            s[1..].to_string()
+        } else {
+            s
+        };
+        return Some(PathBuf::from(s.replace('/', "\\")));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        Some(PathBuf::from(std::ffi::OsString::from_vec(decoded)))
+    }
+    #[cfg(not(unix))]
+    {
+        Some(PathBuf::from(
+            String::from_utf8_lossy(&decoded).into_owned(),
+        ))
+    }
+}
+
+/// Decodes `%XX` escapes; anything that isn't a valid escape passes through.
+fn percent_decode(bytes: &[u8]) -> Vec<u8> {
+    let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
+    let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok()?;
-            if let Ok(b) = u8::from_str_radix(hex, 16) {
-                out.push(b);
-                i += 3;
-                continue;
-            }
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2]))
+        {
+            out.push(h << 4 | l);
+            i += 3;
+            continue;
         }
         out.push(bytes[i]);
         i += 1;
     }
-    let s = String::from_utf8(out).ok()?;
-    Some(PathBuf::from(s))
+    out
 }
 
 #[cfg(test)]
@@ -603,6 +714,72 @@ mod tests {
         let uri = path_to_uri(&p);
         assert_eq!(uri, "file:///home/user/my%20file.rs");
         assert_eq!(uri_to_path(&uri), Some(p));
+    }
+
+    #[test]
+    fn windows_paths_become_drive_uris_and_back() {
+        let uri = path_str_to_uri(r"C:\Users\me\a b.rs", true);
+        assert_eq!(uri, "file:///C:/Users/me/a%20b.rs");
+        assert_eq!(
+            uri_to_path_with(&uri, true),
+            Some(PathBuf::from(r"C:\Users\me\a b.rs"))
+        );
+        // Servers that encode the drive colon still round-trip.
+        assert_eq!(
+            uri_to_path_with("file:///c%3A/x.rs", true),
+            Some(PathBuf::from(r"c:\x.rs"))
+        );
+        // Unix flavor is unchanged.
+        assert_eq!(path_str_to_uri("/a/b:c", false), "file:///a/b%3Ac");
+    }
+
+    #[test]
+    fn uri_decoding_tolerates_bad_escapes() {
+        // Invalid / truncated escapes stay literal instead of failing.
+        assert_eq!(
+            uri_to_path_with("file:///tmp/%zz%4", false),
+            Some(PathBuf::from("/tmp/%zz%4"))
+        );
+        // An escape at the very end is decoded; a multibyte char after '%' is fine.
+        assert_eq!(
+            uri_to_path_with("file:///tmp/a%20", false),
+            Some(PathBuf::from("/tmp/a "))
+        );
+        assert_eq!(
+            uri_to_path_with("file:///tmp/%é", false),
+            Some(PathBuf::from("/tmp/%é"))
+        );
+        assert_eq!(
+            uri_to_path_with("file://localhost/tmp/x", false),
+            Some(PathBuf::from("/tmp/x"))
+        );
+    }
+
+    #[test]
+    fn queued_did_changes_collapse_per_document() {
+        let change = |uri: &str, v: i32| LspClientMsg::DidChange {
+            uri: uri.into(),
+            version: v,
+            text: format!("v{v}"),
+        };
+        let mut q = Vec::new();
+        enqueue(&mut q, change("a", 1));
+        enqueue(&mut q, change("b", 1));
+        enqueue(&mut q, change("a", 2));
+        enqueue(&mut q, LspClientMsg::DidClose { uri: "a".into() });
+        enqueue(&mut q, change("a", 3)); // a close sits between: keep both
+        let versions: Vec<(String, i32)> = q
+            .iter()
+            .filter_map(|m| match m {
+                LspClientMsg::DidChange { uri, version, .. } => Some((uri.clone(), *version)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            versions,
+            vec![("b".into(), 1), ("a".into(), 2), ("a".into(), 3)]
+        );
+        assert_eq!(q.len(), 4);
     }
 
     #[test]

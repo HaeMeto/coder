@@ -38,7 +38,7 @@ pub struct GitEntry {
 /// A previous commit shown in the HISTORY section of the Git panel.
 #[derive(Clone, Debug)]
 pub struct GitCommit {
-    /// Abbreviated commit hash (7 chars).
+    /// Abbreviated commit hash: the shortest unique prefix (7+ chars).
     pub hash: String,
     /// First line of the commit message.
     pub summary: String,
@@ -143,7 +143,15 @@ fn load_history(repo: &Repository) -> Vec<GitCommit> {
         let Ok(commit) = repo.find_commit(oid) else {
             continue;
         };
-        let hash = oid.to_string().chars().take(7).collect();
+        // The shortest *unique* abbreviation (at least `core.abbrev`, 7 by
+        // default): the hash is later resolved with `revparse_single`, where a
+        // plain 7-char prefix could be ambiguous in a large repository.
+        let hash = commit
+            .as_object()
+            .short_id()
+            .ok()
+            .and_then(|b| b.as_str().map(str::to_string))
+            .unwrap_or_else(|| oid.to_string());
         let summary = commit.summary().unwrap_or("").to_string();
         out.push(GitCommit { hash, summary });
     }
@@ -296,10 +304,29 @@ pub fn revert(root: &Path, rel: &str) -> Result<(), git2::Error> {
 /// Runs a `git` CLI subcommand in `root`, returning the combined output on success
 /// or the error text on failure. Uses the CLI so it inherits the user's auth
 /// (credential helpers, ssh-agent) exactly like their shell.
+///
+/// Never interactive: git runs under the TUI with no usable terminal, so a
+/// username/passphrase prompt would hang the command (or scribble over the
+/// screen). stdin is closed, `GIT_TERMINAL_PROMPT=0` turns HTTPS prompts into
+/// errors, and ssh runs in batch mode — unless the user configured their own
+/// ssh command (`GIT_SSH_COMMAND`, `GIT_SSH` or `core.sshCommand`), which is
+/// left untouched.
 fn run_git(root: &Path, args: &[&str]) -> Result<String, String> {
-    let out = std::process::Command::new("git")
-        .current_dir(root)
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(root)
         .args(args)
+        .stdin(std::process::Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0");
+    let user_ssh = std::env::var_os("GIT_SSH_COMMAND").is_some()
+        || std::env::var_os("GIT_SSH").is_some()
+        || Repository::discover(root)
+            .and_then(|r| r.config())
+            .and_then(|c| c.get_string("core.sshCommand"))
+            .is_ok();
+    if !user_ssh {
+        cmd.env("GIT_SSH_COMMAND", "ssh -oBatchMode=yes");
+    }
+    let out = cmd
         .output()
         .map_err(|e| format!("could not run git: {e}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout);

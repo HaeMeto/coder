@@ -107,6 +107,13 @@ pub struct Hunk {
     pub old_start: usize,
     pub old_lines: usize,
     pub new_text: String,
+    /// Fingerprint of the base this hunk was computed against (see
+    /// [`base_fingerprint`]): the replaced lines plus one line of context on
+    /// each side and the base's total line count. `apply_hunks` refuses to
+    /// splice unless the current base matches. Absent in session files written
+    /// before it existed — those are treated as unverifiable and not applied.
+    #[serde(default)]
+    pub old_hash: Option<u64>,
 }
 
 /// Stable key for `root`, tolerant of a same-filesystem rename: the directory's
@@ -177,7 +184,33 @@ pub enum SaveOutcome {
     NoPath,
 }
 
-/// Writes `snapshot` for `root`, first checking the on-disk generation against
+/// Shrinks large dirty tabs before writing: a `Content::Full` text of at least
+/// [`DIFF_THRESHOLD_BYTES`] for a file tab is replaced by hunks against the
+/// file's current on-disk content, so a big unsaved file isn't duplicated into
+/// the session. Stays `Full` when there is no readable baseline (deleted,
+/// untitled) or the diff can't reproduce the text. Blocking (reads files).
+pub fn compact(snapshot: &mut SessionSnapshot) {
+    for tab in &mut snapshot.tabs {
+        let Some(Content::Full { text }) = &tab.content else {
+            continue;
+        };
+        if text.len() < DIFF_THRESHOLD_BYTES {
+            continue;
+        }
+        let Some(path) = tab.path.as_deref() else {
+            continue;
+        };
+        let Some(hunks) = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|disk| diff_hunks(&disk, text))
+        else {
+            continue;
+        };
+        tab.content = Some(Content::Diff { hunks });
+    }
+}
+
+/// Writes `snapshot` for `root` (after [`compact`]ing it), first checking the on-disk generation against
 /// `seen` (the generation this instance last observed) — a coarse first-
 /// write-wins guard against two `coder` instances clobbering each other's
 /// checkpoint (see the module doc). Not airtight — there is a small
@@ -197,18 +230,15 @@ pub fn save(root: &Path, snapshot: &mut SessionSnapshot, seen: u64) -> SaveOutco
         return SaveOutcome::Conflict(disk_gen);
     }
     snapshot.generation = disk_gen + 1;
+    compact(snapshot);
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
     let Ok(text) = toml::to_string_pretty(snapshot) else {
         return SaveOutcome::NoPath;
     };
-    let tmp = path.with_extension(format!("toml.tmp.{}", std::process::id()));
-    if std::fs::write(&tmp, text)
-        .and_then(|_| std::fs::rename(&tmp, &path))
-        .is_err()
-    {
-        let _ = std::fs::remove_file(&tmp);
+    // Owner-only (0600 on Unix): the file holds unsaved buffer contents.
+    if crate::services::fs::write_atomic_private(&path, text.as_bytes()).is_err() {
         return SaveOutcome::NoPath;
     }
     SaveOutcome::Saved(snapshot.generation)
@@ -216,10 +246,13 @@ pub fn save(root: &Path, snapshot: &mut SessionSnapshot, seen: u64) -> SaveOutco
 
 /// Computes hunks turning `old` into `new`, in old-file line coordinates
 /// (`git2::Patch`, the same primitive `services::git::gutter_marks` diffs
-/// with). `None` if the buffers can't be diffed at all.
+/// with). `None` if the buffers can't be diffed at all, or the hunks would not
+/// reproduce `new` exactly — the caller then stores the full text instead.
 pub fn diff_hunks(old: &str, new: &str) -> Option<Vec<Hunk>> {
     let mut opts = git2::DiffOptions::new();
-    opts.context_lines(0);
+    // `force_text`: a NUL byte would otherwise make libgit2 call the buffers
+    // binary and report no hunks at all, silently dropping every edit.
+    opts.context_lines(0).force_text(true);
     let patch =
         git2::Patch::from_buffers(old.as_bytes(), None, new.as_bytes(), None, Some(&mut opts))
             .ok()?;
@@ -248,21 +281,57 @@ pub fn diff_hunks(old: &str, new: &str) -> Option<Vec<Hunk>> {
             old_start,
             old_lines,
             new_text: text,
+            old_hash: None,
         });
     }
-    Some(hunks)
+    let old_split = split_lines_keep(old);
+    for h in &mut hunks {
+        h.old_hash = base_fingerprint(&old_split, h.old_start, h.old_lines);
+    }
+    // Belt and braces: only hand out hunks that provably rebuild `new`.
+    (apply_hunks(old, &hunks).as_deref() == Some(new)).then_some(hunks)
+}
+
+/// FNV-1a over the lines `[start - 1, start + len + 1)` (clipped to the base)
+/// and the base's line count. `None` if the range doesn't fit `lines`.
+fn base_fingerprint(lines: &[String], start: usize, len: usize) -> Option<u64> {
+    let end = start.checked_add(len)?;
+    if end > lines.len() {
+        return None;
+    }
+    let from = start.saturating_sub(1);
+    let to = (end + 1).min(lines.len());
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bytes: &[u8]| {
+        for &b in bytes {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    feed(&(lines.len() as u64).to_le_bytes());
+    for line in &lines[from..to] {
+        feed(line.as_bytes());
+        feed(&[0xff]); // separator: not a valid UTF-8 byte, can't be in a line
+    }
+    // 63 bits: TOML integers are signed 64-bit, a larger u64 fails to serialize.
+    Some(h & i64::MAX as u64)
 }
 
 /// Reconstructs the dirty text by applying `hunks` (bottom-to-top, so earlier
-/// offsets stay valid) over `base`. `None` if a hunk's range no longer fits —
-/// the base changed too much since the hunks were computed — so the caller can
-/// fall back to opening the file unmodified rather than risk corrupting it.
+/// offsets stay valid) over `base`. `None` if a hunk no longer matches the base
+/// — its range doesn't fit, its old lines/context differ, or it carries no
+/// fingerprint to check at all — so the caller can fall back to opening the
+/// file unmodified rather than risk corrupting it.
 pub fn apply_hunks(base: &str, hunks: &[Hunk]) -> Option<String> {
     let mut lines = split_lines_keep(base);
-    for h in hunks.iter().rev() {
-        if h.old_start > lines.len() || h.old_start + h.old_lines > lines.len() {
+    // Verify every hunk against the untouched base before splicing any.
+    for h in hunks {
+        let fp = base_fingerprint(&lines, h.old_start, h.old_lines)?;
+        if h.old_hash != Some(fp) {
             return None;
         }
+    }
+    for h in hunks.iter().rev() {
         let piece = split_lines_keep(&h.new_text);
         lines.splice(h.old_start..h.old_start + h.old_lines, piece);
     }
@@ -355,6 +424,87 @@ mod tests {
         let hunks = diff_hunks(old, new).unwrap();
         // The "base" shrank too much since the hunk was computed.
         assert!(apply_hunks("one\n", &hunks).is_none());
+    }
+
+    #[test]
+    fn apply_hunks_rejects_a_same_size_base_with_different_lines() {
+        let old = "one\ntwo\nthree\n";
+        let new = "one\nTWO\nthree\n";
+        let hunks = diff_hunks(old, new).unwrap();
+        // Same line count, but the line the hunk replaces changed on disk.
+        assert!(apply_hunks("one\nzwei\nthree\n", &hunks).is_none());
+        // A pure insertion checks its surrounding context too.
+        let h = diff_hunks(old, "one\nX\ntwo\nthree\n").unwrap();
+        assert!(apply_hunks("uno\ntwo\nthree\n", &h).is_none());
+        // Hunks from an old session file (no fingerprint) are never applied.
+        let mut legacy = hunks.clone();
+        legacy[0].old_hash = None;
+        assert!(apply_hunks(old, &legacy).is_none());
+        // Fingerprints survive the session's TOML round trip.
+        let snap = Content::Diff { hunks };
+        let text = toml::to_string(&snap).unwrap();
+        let Content::Diff { hunks: back } = toml::from_str(&text).unwrap() else {
+            panic!("expected a diff");
+        };
+        assert_eq!(apply_hunks(old, &back).as_deref(), Some(new));
+    }
+
+    #[test]
+    fn compact_turns_large_full_text_into_hunks() {
+        let dir =
+            std::env::temp_dir().join(format!("coder-session-compact-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("big.txt");
+        let disk: String = (0..40_000).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(&file, &disk).unwrap();
+        let edited = disk.replacen("line 7\n", "LINE 7\n", 1);
+        assert!(edited.len() >= DIFF_THRESHOLD_BYTES);
+        let entry = |path: Option<String>, text: &str| TabEntry {
+            kind: "file".into(),
+            path,
+            untitled_id: None,
+            label: None,
+            line: 0,
+            col: 0,
+            scroll_y: 0,
+            scroll_x: 0,
+            dirty: true,
+            content: Some(Content::Full { text: text.into() }),
+        };
+        let mut snap = SessionSnapshot {
+            root: String::new(),
+            generation: 0,
+            active: None,
+            sidebar_panel: "files".into(),
+            sidebar_width: 30,
+            terminal_open: false,
+            untitled_seq: 0,
+            tabs: vec![
+                entry(Some(file.display().to_string()), &edited),
+                entry(Some(dir.join("gone.txt").display().to_string()), &edited),
+                entry(Some(file.display().to_string()), "small"),
+            ],
+        };
+        compact(&mut snap);
+        match &snap.tabs[0].content {
+            Some(Content::Diff { hunks }) => {
+                assert_eq!(apply_hunks(&disk, hunks).as_deref(), Some(edited.as_str()))
+            }
+            _ => panic!("expected a diff"),
+        }
+        assert!(matches!(snap.tabs[1].content, Some(Content::Full { .. })));
+        assert!(matches!(snap.tabs[2].content, Some(Content::Full { .. })));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn diff_hunks_handle_nul_bytes() {
+        let old = "a\0b\nc\n";
+        let new = "a\0b\nC\n";
+        let hunks = diff_hunks(old, new).unwrap();
+        assert!(!hunks.is_empty());
+        assert_eq!(apply_hunks(old, &hunks).as_deref(), Some(new));
     }
 
     #[test]
