@@ -21,8 +21,11 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
     let th = &model.theme;
     let text = toast.message.as_str();
     // Box wide enough for the text plus horizontal padding and borders.
-    let inner_w = text.chars().count() as u16;
-    let box_w = (inner_w + 4).min(area.width.saturating_sub(2)).max(3);
+    // Clamped in `usize` before the cast so a huge message can't overflow `u16`.
+    let inner_w = text.chars().count();
+    let box_w = (inner_w + 4)
+        .min(area.width.saturating_sub(2) as usize)
+        .max(3) as u16;
     let box_h = 3;
     if area.height < box_h + 2 || area.width < box_w {
         return;

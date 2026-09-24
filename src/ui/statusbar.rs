@@ -46,8 +46,8 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
         if buf.dirty {
             right.push_str("● ");
         }
-        if let Some(text) = buf.selected_text() {
-            right.push_str(&format!("Selected: {}  ", text.chars().count()));
+        if let Some(n) = buf.selected_char_count() {
+            right.push_str(&format!("Selected: {n}  "));
         }
     }
     let focus = match model.focus {

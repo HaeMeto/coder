@@ -190,7 +190,10 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
             ))
             .style(Style::new().bg(bg)),
         );
-        lines.push(Line::from(match_spans(m, th)).style(Style::new().bg(bg).fg(th.fg)));
+        lines.push(
+            Line::from(match_spans(m, th, area.width as usize))
+                .style(Style::new().bg(bg).fg(th.fg)),
+        );
     }
     let p = Paragraph::new(lines).style(Style::new().bg(th.bg_alt));
     frame.render_widget(p, area);
@@ -221,19 +224,60 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
 }
 
 /// A result's matched line (trimmed) with every query match highlighted in
-/// the same color as the editor's find matches.
+/// the same color as the editor's find matches. Only a `width`-cell window of
+/// the line is copied: when the first match would fall off the right edge the
+/// window slides right (keeping a little leading context) and starts with `…`,
+/// so a match deep inside a long (e.g. minified) line stays visible and the
+/// render never copies the whole line every frame.
 fn match_spans(
     m: &crate::services::search::SearchMatch,
     th: &crate::core::theme::Theme,
+    width: usize,
 ) -> Vec<Span<'static>> {
     let line = m.line.as_str();
     let start = line.len() - line.trim_start().len();
     let end = start + line.trim().len();
     let hl = Style::new().bg(th.find_match);
     let mut spans = Vec::new();
-    let mut pos = start;
+    if width == 0 {
+        return spans;
+    }
+
+    // Byte offset `n` chars after `from` (clamped to `end`).
+    let advance = |from: usize, n: usize| {
+        line[from..end]
+            .char_indices()
+            .nth(n)
+            .map_or(end, |(i, _)| from + i)
+    };
+
+    // Slide the window so the first match is visible.
+    let mut win_start = start;
+    let mut budget = width;
+    if let Some(&(s0, e0)) = m.ranges.first() {
+        let (s0, e0) = (s0.clamp(start, end), e0.clamp(start, end));
+        if line.is_char_boundary(s0) && line.is_char_boundary(e0) {
+            let lead = line[start..s0].chars().count();
+            let mlen = line[s0..e0].chars().count();
+            let ctx = (width / 4).min(12);
+            if lead > ctx && lead + mlen > width {
+                // Back up `ctx` chars before the match; the `…` costs one cell.
+                let back = line[start..s0]
+                    .char_indices()
+                    .rev()
+                    .nth(ctx.saturating_sub(1))
+                    .map_or(start, |(i, _)| start + i);
+                win_start = if ctx == 0 { s0 } else { back };
+                spans.push(Span::styled("…", Style::new().fg(th.fg_dim)));
+                budget = width.saturating_sub(1);
+            }
+        }
+    }
+    let win_end = advance(win_start, budget);
+
+    let mut pos = win_start;
     for &(s, e) in &m.ranges {
-        let (s, e) = (s.clamp(pos, end), e.clamp(pos, end));
+        let (s, e) = (s.clamp(pos, win_end), e.clamp(pos, win_end));
         if s >= e || !line.is_char_boundary(s) || !line.is_char_boundary(e) {
             continue;
         }
@@ -241,7 +285,7 @@ fn match_spans(
         spans.push(Span::styled(line[s..e].to_string(), hl));
         pos = e;
     }
-    spans.push(Span::raw(line[pos..end].to_string()));
+    spans.push(Span::raw(line[pos..win_end].to_string()));
     spans
 }
 
@@ -264,6 +308,10 @@ pub fn search_hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<SearchHit
     let s = &model.sidebar.search;
     let rows = header_rows(s.replace_mode);
     let rel = y.checked_sub(body.y)?;
+    // Below the panel body (e.g. the sidebar's bottom padding row): nothing.
+    if rel >= body.height {
+        return None;
+    }
 
     if let Some(row) = rows.get(rel as usize) {
         return match row {
@@ -352,9 +400,29 @@ mod tests {
             line: "    let foo = foo();".into(),
             ranges: vec![(8, 11), (14, 17)],
         };
-        let spans = match_spans(&m, &th);
+        let spans = match_spans(&m, &th, 80);
         let text: Vec<&str> = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, ["let ", "foo", " = ", "foo", "();"]);
         assert_eq!(spans[1].style.bg, Some(th.find_match));
+    }
+
+    #[test]
+    fn long_result_line_is_windowed_around_the_first_match() {
+        let th = crate::core::theme::Theme::default();
+        let line = format!("{}needle tail", "x".repeat(200));
+        let m = crate::services::search::SearchMatch {
+            path: "/w/a.rs".into(),
+            rel: "a.rs".into(),
+            line_no: 1,
+            line: line.clone(),
+            ranges: vec![(200, 206)],
+        };
+        let spans = match_spans(&m, &th, 20);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.starts_with('…'), "{text:?}");
+        assert!(text.contains("needle"), "{text:?}");
+        assert!(text.chars().count() <= 20, "{text:?}");
+        let hit = spans.iter().find(|s| s.content == "needle").unwrap();
+        assert_eq!(hit.style.bg, Some(th.find_match));
     }
 }

@@ -39,9 +39,11 @@ pub fn render(frame: &mut Frame, area: Rect, gutter_w: u16, model: &Model) {
                     .unwrap_or(0)
         })
         .max()
-        .unwrap_or(0) as u16
+        .unwrap_or(0)
         + 2;
-    let width = content_w.clamp(8, MAX_WIDTH.min(area.width.max(8)));
+    // Clamp in `usize` before casting: a very long label/detail must not wrap `u16`.
+    let max_w = MAX_WIDTH.min(area.width.max(8));
+    let width = content_w.clamp(8, max_w as usize) as u16;
 
     // Prefer below the caret; flip above if it would overflow the editor bottom.
     let below = cy + 1;

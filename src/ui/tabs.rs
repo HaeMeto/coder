@@ -6,6 +6,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use unicode_width::UnicodeWidthStr;
+
 use crate::app::model::{Model, Tab};
 
 /// Rows of the tab bar: the workspace-relative parent directory (+ ✕) on
@@ -42,11 +44,21 @@ fn parent_label(model: &Model, tab: &Tab) -> String {
 
 /// Width of a tab's body (both rows), without the `│` separator. The top row
 /// is " {parent} " then "✕ " pinned to the right; the bottom row is
-/// " {title} {dirty} ".
-fn body_width(model: &Model, tab: &Tab) -> u16 {
-    let top = parent_label(model, tab).chars().count() + 4;
-    let bottom = tab.title().chars().count() + 4;
-    top.max(bottom).max(6) as u16
+/// " {title} {dirty} ". Measured in terminal cells (`UnicodeWidthStr`), the
+/// same unit ratatui lays spans out in, so the hit-test in `tab_at` agrees with
+/// what is drawn even for wide (CJK / emoji) names. `usize` so a long tab row
+/// can never overflow.
+fn body_width(model: &Model, tab: &Tab) -> usize {
+    let top = parent_label(model, tab).width() + 4;
+    let bottom = tab.title().width() + 4;
+    top.max(bottom).max(6)
+}
+
+/// `s` right-padded with spaces to `w` terminal cells (`format!`'s `{:<w$}`
+/// pads by chars, which disagrees with cell width for wide characters).
+fn pad_cells(s: &str, w: usize) -> String {
+    let pad = w.saturating_sub(s.width());
+    format!("{s}{}", " ".repeat(pad))
 }
 
 pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
@@ -66,12 +78,12 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
         } else {
             th.tab_inactive_bg
         };
-        let w = body_width(model, tab) as usize;
+        let w = body_width(model, tab);
 
         // Top row: dim parent dir, then "✕ " pinned to the right.
         let parent = format!(" {}", parent_label(model, tab));
         top.push(Span::styled(
-            format!("{parent:<pw$}", pw = w - 2),
+            pad_cells(&parent, w - 2),
             Style::new().fg(th.fg_dim).bg(bg),
         ));
         top.push(Span::styled("✕ ", Style::new().fg(th.fg_dim).bg(bg)));
@@ -89,7 +101,7 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
             style = style.add_modifier(Modifier::ITALIC);
         }
         let name = format!(" {} {} ", tab.title(), dirty);
-        bottom.push(Span::styled(format!("{name:<w$}"), style));
+        bottom.push(Span::styled(pad_cells(&name, w), style));
         bottom.push(Span::styled("│", Style::new().fg(th.border).bg(bg)));
     }
     let p = Paragraph::new(vec![Line::from(top), Line::from(bottom)])
@@ -108,7 +120,9 @@ pub enum TabHit {
 /// Returns which tab / close button was clicked at (x, y). The ✕ is only on
 /// the top row; anywhere else on a tab selects it.
 pub fn tab_at(model: &Model, area: Rect, x: u16, y: u16) -> Option<TabHit> {
-    let mut cursor = area.x;
+    // Summed in `usize`: many / long tabs can run past `u16::MAX` cells.
+    let x = x as usize;
+    let mut cursor = area.x as usize;
     for (i, tab) in model.tabs.iter().enumerate() {
         let w = body_width(model, tab);
         let total = w + 1; // body + separator "│"

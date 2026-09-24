@@ -63,6 +63,11 @@ pub fn layout(model: &Model, editor: Rect) -> Option<FindLayout> {
     let cw = outer_w - 2; // inner content width
     // Content rows: find row [+ spacer + replace]; plus a padding row top and bottom.
     let content_rows = if model.find.replace_mode { 3 } else { 1 };
+    // Too short to hold the box (content + top/bottom padding): draw nothing
+    // rather than spill past the editor's bottom edge.
+    if editor.height < content_rows + 2 {
+        return None;
+    }
     let area = Rect {
         x: editor.x + editor.width - outer_w,
         y: editor.y,

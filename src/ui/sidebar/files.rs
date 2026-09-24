@@ -16,6 +16,14 @@ const ACTION_COLS: usize = 5;
 /// A row narrower than this has no room for the action icons.
 const MIN_ACTION_WIDTH: usize = 8;
 
+/// Whether a directory row at tree `depth` has room for the right-edge
+/// new-file / new-folder buttons: indent + expander (2) + at least one name
+/// cell + the buttons. Shared by `render` and `file_hit`, so a button that is
+/// not drawn (deep indent, narrow sidebar) is never clickable either.
+fn dir_buttons_fit(width: usize, depth: usize) -> bool {
+    width >= MIN_ACTION_WIDTH && width >= 2 * depth + 2 + 1 + ACTION_COLS
+}
+
 /// What a click in the file tree landed on.
 pub enum FileHit {
     /// A tree row (open the file / toggle the directory).
@@ -78,7 +86,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
         ];
         // Directories get "new file" / "new folder" buttons pinned to the right edge.
         let width = area.width as usize;
-        if row.is_dir && width >= MIN_ACTION_WIDTH {
+        if row.is_dir && dir_buttons_fit(width, row.depth) {
             let avail = width.saturating_sub(indent.len() + 2 + ACTION_COLS);
             let (new_file, new_folder) = action_icons(model);
             spans.push(Span::styled(
@@ -208,7 +216,7 @@ pub fn file_hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<FileHit> {
     let width = body.width as usize;
     let col = x.saturating_sub(body.x) as usize;
 
-    if row.is_dir && width >= MIN_ACTION_WIDTH {
+    if row.is_dir && dir_buttons_fit(width, row.depth) {
         // Exact glyph columns only (mirrors `render`): file at width-ACTION_COLS,
         // folder at width-2. Clicking the gap between them falls through to Row.
         if col == width - 2 {

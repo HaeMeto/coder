@@ -23,7 +23,12 @@ pub struct DialogLayout {
 
 /// Centered modal rectangle.
 fn dialog_area(d: &Dialog, term: Rect) -> Rect {
-    let w = 54u16.min(term.width.saturating_sub(4)).max(24);
+    // Prefer 54 wide with a 2-cell margin, at least 24 — but never wider than
+    // the terminal itself (the minimum must not push the box off-screen).
+    let w = 54u16
+        .min(term.width.saturating_sub(4))
+        .max(24)
+        .min(term.width);
     let h: u16 = match d.kind {
         DialogKind::Input => 9,
         _ => 8,
