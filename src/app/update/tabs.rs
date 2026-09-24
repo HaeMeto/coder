@@ -117,7 +117,12 @@ pub(super) fn close_tab(model: &mut Model, i: usize) -> Vec<Cmd> {
     model.invalidate_highlight();
     // Only notify the server once no tab holds the file anymore.
     match path {
-        Some(p) if !model.tabs.iter().any(|t| t.buffer.path.as_deref() == Some(p.as_path())) => {
+        Some(p)
+            if !model
+                .tabs
+                .iter()
+                .any(|t| t.buffer.path.as_deref() == Some(p.as_path())) =>
+        {
             super::lsp::did_close(model, &p)
         }
         _ => Vec::new(),
@@ -156,8 +161,11 @@ pub(super) fn new_untitled_tab(model: &mut Model) -> Vec<Cmd> {
 /// to write to and stays dirty — the session checkpoint preserves it either way.
 pub(super) fn save_all_and_quit(model: &mut Model) -> Vec<Cmd> {
     let s = &model.sidebar.settings;
-    let (trim, final_nl, format_on_save) =
-        (s.trim_trailing_whitespace, s.insert_final_newline, s.format_on_save);
+    let (trim, final_nl, format_on_save) = (
+        s.trim_trailing_whitespace,
+        s.insert_final_newline,
+        s.format_on_save,
+    );
     for tab in model.tabs.iter_mut() {
         if !tab.buffer.dirty || tab.read_only || tab.notice.is_some() {
             continue;
@@ -197,7 +205,11 @@ pub(super) fn save_as(model: &mut Model, tab: usize, name: &str) -> Vec<Cmd> {
         return Vec::new();
     }
     let path = PathBuf::from(name);
-    let path = if path.is_absolute() { path } else { model.root.join(path) };
+    let path = if path.is_absolute() {
+        path
+    } else {
+        model.root.join(path)
+    };
     let Some(t) = model.tabs.get_mut(tab) else {
         return Vec::new();
     };
@@ -242,7 +254,8 @@ pub(super) fn open_keybindings(model: &mut Model) -> Vec<Cmd> {
 /// dialog; the edit rows open the file in the editor. Shared by keyboard Enter
 /// and mouse click.
 pub(super) fn activate_settings(model: &mut Model) -> Vec<Cmd> {
-    let Some(&item) = crate::ui::sidebar::SETTINGS_ITEMS.get(model.sidebar.settings_selected) else {
+    let Some(&item) = crate::ui::sidebar::SETTINGS_ITEMS.get(model.sidebar.settings_selected)
+    else {
         return Vec::new();
     };
     use crate::ui::sidebar::SettingsItem;
@@ -514,7 +527,10 @@ mod untitled_and_quit_tests {
 
         let cmds = close_tab_with_dirty_check(&mut model, 0);
         assert!(cmds.is_empty());
-        assert!(model.dialog.is_some(), "an untitled dirty tab must be confirmed, not silently dropped");
+        assert!(
+            model.dialog.is_some(),
+            "an untitled dirty tab must be confirmed, not silently dropped"
+        );
         assert_eq!(model.tabs.len(), 1, "not closed yet");
     }
 
@@ -527,7 +543,9 @@ mod untitled_and_quit_tests {
         std::fs::write(&path, "old").unwrap();
 
         let mut model = Model::new(dir.clone());
-        model.tabs.push(Tab::new(Buffer::new(Some(path.clone()), "old")));
+        model
+            .tabs
+            .push(Tab::new(Buffer::new(Some(path.clone()), "old")));
         model.tabs[0].buffer.insert_str("new");
         assert!(model.tabs[0].buffer.dirty);
         new_untitled_tab(&mut model); // untitled: nothing to write to
@@ -535,9 +553,15 @@ mod untitled_and_quit_tests {
 
         save_all_and_quit(&mut model);
         assert!(model.should_quit);
-        assert!(!model.tabs[0].buffer.dirty, "on-disk tab is saved and marked clean");
+        assert!(
+            !model.tabs[0].buffer.dirty,
+            "on-disk tab is saved and marked clean"
+        );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "newold");
-        assert!(model.tabs[1].buffer.dirty, "untitled buffer has nowhere to write to, stays dirty");
+        assert!(
+            model.tabs[1].buffer.dirty,
+            "untitled buffer has nowhere to write to, stays dirty"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -549,7 +573,10 @@ mod untitled_and_quit_tests {
         model.tabs[0].buffer.insert_str("draft");
         discard_and_quit(&mut model);
         assert!(model.should_quit);
-        assert!(model.tabs[0].buffer.dirty, "content is preserved (via the session checkpoint), just not written to a real file");
+        assert!(
+            model.tabs[0].buffer.dirty,
+            "content is preserved (via the session checkpoint), just not written to a real file"
+        );
     }
 
     #[test]
@@ -563,8 +590,14 @@ mod untitled_and_quit_tests {
         model.tabs[0].buffer.insert_str("hello");
         let cmds = save_as(&mut model, 0, "notes.txt");
         assert!(matches!(cmds.as_slice(), [Cmd::WriteFile { .. }]));
-        assert_eq!(model.tabs[0].buffer.path.as_deref(), Some(dir.join("notes.txt").as_path()));
-        assert!(model.tabs[0].untitled_id.is_none(), "no longer keyed as untitled");
+        assert_eq!(
+            model.tabs[0].buffer.path.as_deref(),
+            Some(dir.join("notes.txt").as_path())
+        );
+        assert!(
+            model.tabs[0].untitled_id.is_none(),
+            "no longer keyed as untitled"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -78,7 +78,11 @@ pub(super) fn activate_selection(model: &mut Model) -> Vec<Cmd> {
             }
         }
         Panel::Search => {
-            let m = model.sidebar.search.results.get(model.sidebar.search.selected);
+            let m = model
+                .sidebar
+                .search
+                .results
+                .get(model.sidebar.search.selected);
             if let Some(m) = m {
                 let path = m.path.clone();
                 let line = m.line_no.saturating_sub(1);
@@ -107,7 +111,11 @@ pub(super) fn new_entry_dialog(model: &mut Model, idx: usize, is_dir: bool) -> V
     let (dir, in_name) = if row.is_dir {
         (row.path.clone(), row.name.clone())
     } else {
-        let parent = row.path.parent().unwrap_or(&model.sidebar.files.root).to_path_buf();
+        let parent = row
+            .path
+            .parent()
+            .unwrap_or(&model.sidebar.files.root)
+            .to_path_buf();
         let name = dir_label(model, &parent);
         (parent, name)
     };
@@ -176,7 +184,9 @@ pub(super) fn delete_dialog(model: &mut Model, idx: usize) -> Vec<Cmd> {
     model.focus = Focus::Sidebar;
     model.sidebar.files.selected = idx;
     let message = if is_dir {
-        format!("Folder '{name}' and everything in it will be deleted. This cannot be undone. Are you sure?")
+        format!(
+            "Folder '{name}' and everything in it will be deleted. This cannot be undone. Are you sure?"
+        )
     } else {
         format!("File '{name}' will be deleted. This cannot be undone. Are you sure?")
     };

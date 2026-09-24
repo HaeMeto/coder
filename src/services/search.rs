@@ -93,17 +93,16 @@ pub fn search(
     results
 }
 
-
 /// Enumerates every workspace file under `root` (honoring ignore rules:
 /// hidden dot-files and `.gitignore`d paths are skipped), returning absolute
 /// paths. Used to build the quickbar's "search file" list. Blocking; call
 /// inside `spawn_blocking`.
 pub fn list_files(root: &Path) -> Vec<PathBuf> {
- walker(root, false)
- .flatten()
- .map(|e| e.path().to_path_buf())
- .filter(|p| p.is_file())
- .collect()
+    walker(root, false)
+        .flatten()
+        .map(|e| e.path().to_path_buf())
+        .filter(|p| p.is_file())
+        .collect()
 }
 
 /// Replaces `query` matches with `replace` on a single 1-based line of `path`
@@ -228,10 +227,8 @@ mod tests {
     fn temp_file(content: &str) -> PathBuf {
         static N: AtomicUsize = AtomicUsize::new(0);
         let n = N.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "coder-search-test-{}-{n}.txt",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("coder-search-test-{}-{n}.txt", std::process::id()));
         std::fs::write(&path, content).unwrap();
         path
     }

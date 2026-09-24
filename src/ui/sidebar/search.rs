@@ -34,9 +34,20 @@ enum Row {
 fn header_rows(replace_mode: bool) -> Vec<Row> {
     let mut rows = vec![Row::Query, Row::Blank, Row::ReplaceToggle];
     if replace_mode {
-        rows.extend([Row::Blank, Row::ReplaceInput, Row::Blank, Row::ReplaceButtons]);
+        rows.extend([
+            Row::Blank,
+            Row::ReplaceInput,
+            Row::Blank,
+            Row::ReplaceButtons,
+        ]);
     }
-    rows.extend([Row::Blank, Row::Regex, Row::MatchCase, Row::SearchHidden, Row::Count]);
+    rows.extend([
+        Row::Blank,
+        Row::Regex,
+        Row::MatchCase,
+        Row::SearchHidden,
+        Row::Count,
+    ]);
     rows
 }
 
@@ -102,7 +113,12 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
     };
     // Input rows are drawn by the shared TextInput widget as an overlay (see
     // below); reserve a blank sunken row for them here.
-    let blank_input = || Line::from(Span::styled(" ".repeat(width), Style::new().bg(th.input_bg())));
+    let blank_input = || {
+        Line::from(Span::styled(
+            " ".repeat(width),
+            Style::new().bg(th.input_bg()),
+        ))
+    };
 
     let rows = header_rows(s.replace_mode);
     let mut lines: Vec<Line> = Vec::with_capacity(rows.len());
@@ -149,7 +165,11 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
     let offset = list_scroll(s.selected, s.results.len(), per_page);
     for (i, m) in s.results.iter().enumerate().skip(offset).take(per_page) {
         let selected = i == s.selected;
-        let bg = if selected { th.selected_bg() } else { th.bg_alt };
+        let bg = if selected {
+            th.selected_bg()
+        } else {
+            th.bg_alt
+        };
         lines.push(
             Line::from(Span::styled(
                 format!(" - {}:{}", m.rel, m.line_no),
@@ -165,7 +185,12 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
     frame.render_widget(p, area);
 
     // Overlay the query/replace inputs on their reserved rows.
-    let input_row = |dy: u16| Rect { x: area.x, y: area.y + dy, width: area.width, height: 1 };
+    let input_row = |dy: u16| Rect {
+        x: area.x,
+        y: area.y + dy,
+        width: area.width,
+        height: 1,
+    };
     frame.render_widget(
         TextInput::new(&s.query, th)
             .placeholder("Find...")
@@ -209,8 +234,13 @@ pub fn search_hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<SearchHit
             Row::Query => Some(SearchHit::QueryField),
             Row::ReplaceToggle => Some(SearchHit::ReplaceModeToggle),
             Row::ReplaceInput => Some(SearchHit::ReplaceField),
-            Row::ReplaceButtons => two_button_hit(body.x, body.width, x)
-                .map(|right| if right { SearchHit::ReplaceAll } else { SearchHit::ReplaceOne }),
+            Row::ReplaceButtons => two_button_hit(body.x, body.width, x).map(|right| {
+                if right {
+                    SearchHit::ReplaceAll
+                } else {
+                    SearchHit::ReplaceOne
+                }
+            }),
             Row::Regex => Some(SearchHit::RegexToggle),
             Row::MatchCase => Some(SearchHit::MatchCaseToggle),
             Row::SearchHidden => Some(SearchHit::SearchHiddenToggle),
@@ -246,7 +276,10 @@ mod tests {
         assert!(!off.contains(&Row::ReplaceButtons));
         assert!(on.contains(&Row::ReplaceInput));
         assert!(on.contains(&Row::ReplaceButtons));
-        assert!(on.len() > off.len(), "replace mode adds rows, never removes any");
+        assert!(
+            on.len() > off.len(),
+            "replace mode adds rows, never removes any"
+        );
     }
 
     #[test]

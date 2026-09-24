@@ -22,13 +22,21 @@ pub(super) fn menu_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
     match key.code {
         KeyCode::Up => {
             if let Some(m) = model.context_menu.as_mut() {
-                m.selected = if m.selected == 0 { last } else { m.selected - 1 };
+                m.selected = if m.selected == 0 {
+                    last
+                } else {
+                    m.selected - 1
+                };
             }
             Vec::new()
         }
         KeyCode::Down => {
             if let Some(m) = model.context_menu.as_mut() {
-                m.selected = if m.selected == last { 0 } else { m.selected + 1 };
+                m.selected = if m.selected == last {
+                    0
+                } else {
+                    m.selected + 1
+                };
             }
             Vec::new()
         }
@@ -108,8 +116,14 @@ mod menu_tests {
         // the quickbar (and now the dialogs) already do.
         let mut model = Model::new(std::env::temp_dir());
         model.context_menu = Some(ContextMenu::new(0, 0, 0));
-        menu_key(&mut model, KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
-        assert!(model.should_quit, "Ctrl+Q must quit even with the context menu open");
+        menu_key(
+            &mut model,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
+        );
+        assert!(
+            model.should_quit,
+            "Ctrl+Q must quit even with the context menu open"
+        );
     }
 
     #[test]
@@ -117,6 +131,9 @@ mod menu_tests {
         let mut model = Model::new(std::env::temp_dir());
         model.context_menu = Some(ContextMenu::new(0, 0, 0));
         menu_key(&mut model, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(model.context_menu.is_none(), "Esc should still close the menu itself");
+        assert!(
+            model.context_menu.is_none(),
+            "Esc should still close the menu itself"
+        );
     }
 }

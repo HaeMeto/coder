@@ -37,12 +37,12 @@ mod terminal;
 
 use action::apply_action;
 use dialog::{dialog_key, dialog_mouse, dialog_paste};
-use menu::{menu_key, menu_mouse, open_file_menu};
-use quickbar::{files_listed, open_quickbar, quickbar_key, quickbar_mouse, quickbar_paste};
 use editor::*;
 use find::*;
 use git::*;
+use menu::{menu_key, menu_mouse, open_file_menu};
 use mouse::handle_mouse;
+use quickbar::{files_listed, open_quickbar, quickbar_key, quickbar_mouse, quickbar_paste};
 use search::*;
 use sidebar_nav::*;
 use tabs::*;
@@ -97,11 +97,11 @@ pub fn tick(model: &mut Model) -> Vec<Cmd> {
 pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
     match msg {
         Msg::Key(key) => {
- // The quickbar (command palette) is the topmost overlay: it captures
- // every key while open.
- if model.quickbar.is_some() {
- return quickbar_key(model, key);
- }
+            // The quickbar (command palette) is the topmost overlay: it captures
+            // every key while open.
+            if model.quickbar.is_some() {
+                return quickbar_key(model, key);
+            }
             // If a modal dialog is open it captures all keyboard input.
             if model.dialog.is_some() {
                 return dialog_key(model, key);
@@ -132,21 +132,23 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                     }
                 }
             }
-            if let Some(action) = keymap::resolve(&model.keybindings, key, model.focus, model.leader) {
-// Consume the leader latch once a command has fired (it may have just
-// been used to unlock a locked command). The Leader key itself re-arms it.
-if model.leader && !matches!(action, Action::Leader) {
-model.leader = false;
-}
+            if let Some(action) =
+                keymap::resolve(&model.keybindings, key, model.focus, model.leader)
+            {
+                // Consume the leader latch once a command has fired (it may have just
+                // been used to unlock a locked command). The Leader key itself re-arms it.
+                if model.leader && !matches!(action, Action::Leader) {
+                    model.leader = false;
+                }
 
                 return apply_action(model, action);
             }
             Vec::new()
         }
         Msg::Mouse(m) => {
- if model.quickbar.is_some() {
- return quickbar_mouse(model, m);
- }
+            if model.quickbar.is_some() {
+                return quickbar_mouse(model, m);
+            }
             if model.dialog.is_some() {
                 return dialog_mouse(model, m);
             }
@@ -383,11 +385,7 @@ model.leader = false;
                 tab.buffer.path = Some(new.clone());
                 cmds.push(Cmd::LoadHeadText(new));
             }
-            model.notify(format!(
-                "Renamed: {} -> {}",
-                name_of(&from),
-                name_of(&to)
-            ));
+            model.notify(format!("Renamed: {} -> {}", name_of(&from), name_of(&to)));
             cmds.push(Cmd::LoadGitStatus);
             cmds
         }
@@ -397,12 +395,7 @@ model.leader = false;
                 .tabs
                 .iter()
                 .enumerate()
-                .filter(|(_, t)| {
-                    t.buffer
-                        .path
-                        .as_ref()
-                        .is_some_and(|p| p.starts_with(&path))
-                })
+                .filter(|(_, t)| t.buffer.path.as_ref().is_some_and(|p| p.starts_with(&path)))
                 .map(|(i, _)| i)
                 .collect();
             let mut cmds: Vec<Cmd> = Vec::new();
@@ -453,11 +446,7 @@ model.leader = false;
                         .iter()
                         .chain(unstaged.iter())
                         .any(|e| e.path == path.as_path());
-                    if !in_list {
-                        Some(i)
-                    } else {
-                        None
-                    }
+                    if !in_list { Some(i) } else { None }
                 })
                 .collect();
             let mut cmds: Vec<Cmd> = Vec::new();
@@ -508,7 +497,7 @@ model.leader = false;
             }
             Vec::new()
         }
- Msg::FilesListed { paths } => files_listed(model, paths),
+        Msg::FilesListed { paths } => files_listed(model, paths),
         Msg::ReplaceDone { changed, count } => {
             // Reload buffers that are open and changed on disk.
             for path in &changed {
@@ -618,7 +607,8 @@ model.leader = false;
                     // multi-instance note.
                     model.session_seen_generation = Some(disk_gen);
                     model.notify(
-                        "Session updated by another coder window; this checkpoint was skipped".to_string(),
+                        "Session updated by another coder window; this checkpoint was skipped"
+                            .to_string(),
                     );
                     Vec::new()
                 }

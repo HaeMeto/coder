@@ -85,7 +85,8 @@ pub(super) fn handle_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
             // Selecting terminal text copies it to the clipboard immediately.
             // A plain click leaves a zero-span selection (start == end); only a
             // real drag across cells should copy.
-            let dragged = matches!(model.terminal.selection, Some((r1, c1, r2, c2)) if (r1, c1) != (r2, c2));
+            let dragged =
+                matches!(model.terminal.selection, Some((r1, c1, r2, c2)) if (r1, c1) != (r2, c2));
             if was_terminal_select && dragged {
                 let text = model.terminal.selected_text();
                 if !text.is_empty() {

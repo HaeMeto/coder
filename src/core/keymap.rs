@@ -72,8 +72,8 @@ pub enum Action {
     OpenFind,
     OpenFindReplace,
 
- // Command palette / quickbar overlay
- OpenQuickbar,
+    // Command palette / quickbar overlay
+    OpenQuickbar,
     FindNext,
     FindPrev,
     FindToggleField,
@@ -81,9 +81,9 @@ pub enum Action {
     // Terminal raw input
     PtyInput(Vec<u8>),
 
- /// Toggle the "leader" state: the next locked command fires directly instead
- /// of waiting for an explicit unlock (a nested/leader-key command mode).
- Leader,
+    /// Toggle the "leader" state: the next locked command fires directly instead
+    /// of waiting for an explicit unlock (a nested/leader-key command mode).
+    Leader,
     Escape,
 }
 
@@ -102,20 +102,19 @@ pub enum Motion {
 }
 
 pub fn resolve(keys: &Keybindings, key: KeyEvent, focus: Focus, unlock: bool) -> Option<Action> {
- let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
- let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
- // User-editable command shortcuts (quit, save, copy, new file, ...) win first.
- // The locked flag is resolved here: a locked command only fires while the
- // leader (unlock) key is held, otherwise it returns `None` so the keystroke
- // falls through to typing/motion below.
- if let Some(full) = keys.resolve_full(key, focus) {
- if full.locked && !unlock {
- return None;
- }
- return Some(full.action);
- }
-
+    // User-editable command shortcuts (quit, save, copy, new file, ...) win first.
+    // The locked flag is resolved here: a locked command only fires while the
+    // leader (unlock) key is held, otherwise it returns `None` so the keystroke
+    // falls through to typing/motion below.
+    if let Some(full) = keys.resolve_full(key, focus) {
+        if full.locked && !unlock {
+            return None;
+        }
+        return Some(full.action);
+    }
 
     match focus {
         Focus::Terminal => resolve_terminal(key, ctrl, shift),
@@ -132,7 +131,11 @@ fn resolve_find(key: KeyEvent, shift: bool) -> Option<Action> {
     // find-specific keys reach here.
     match key.code {
         KeyCode::Tab => Some(Action::FindToggleField), // query <-> replace
-        KeyCode::Enter => Some(if shift { Action::FindPrev } else { Action::FindNext }),
+        KeyCode::Enter => Some(if shift {
+            Action::FindPrev
+        } else {
+            Action::FindNext
+        }),
         // Up/Down step through matches (the inputs are single-line).
         KeyCode::Down => Some(Action::FindNext),
         KeyCode::Up => Some(Action::FindPrev),
@@ -166,9 +169,7 @@ fn resolve_editor(key: KeyEvent, ctrl: bool, shift: bool) -> Option<Action> {
     }
     // Alt+char is a shortcut (panel switching, …), not text: an unbound one is
     // dropped rather than typed into the buffer.
-    if key.modifiers.contains(KeyModifiers::ALT)
-        && matches!(key.code, KeyCode::Char(_))
-    {
+    if key.modifiers.contains(KeyModifiers::ALT) && matches!(key.code, KeyCode::Char(_)) {
         return None;
     }
     match key.code {

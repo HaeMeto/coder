@@ -28,12 +28,12 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
             }
             Vec::new()
         }
- Action::Leader => {
- // Enter leader/unlock mode: the next locked command chord fires
- // directly instead of falling through to typing/motion.
- model.leader = true;
- Vec::new()
- }
+        Action::Leader => {
+            // Enter leader/unlock mode: the next locked command chord fires
+            // directly instead of falling through to typing/motion.
+            model.leader = true;
+            Vec::new()
+        }
         Action::ToggleSidebar => {
             model.layout.sidebar_open = !model.layout.sidebar_open;
             if !model.layout.sidebar_open
@@ -98,7 +98,10 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
                     return fmt;
                 }
             }
-            let contents = model.active_buffer().map(|b| b.full_text()).unwrap_or_default();
+            let contents = model
+                .active_buffer()
+                .map(|b| b.full_text())
+                .unwrap_or_default();
             // Saving the config file re-applies it live (theme, settings, language
             // tooling) so hand-edits take effect without a restart, and re-probes
             // the (possibly changed) tool binaries.
@@ -124,7 +127,9 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         Action::PrevTab => {
             // Shift+Tab dedents a multi-line selection; otherwise it switches tabs.
             if model.focus == Focus::Editor
-                && model.active_buffer().is_some_and(|b| b.selection_is_multiline())
+                && model
+                    .active_buffer()
+                    .is_some_and(|b| b.selection_is_multiline())
             {
                 mutate(model, |b| b.dedent_selection())
             } else if in_git_panel(model) {
@@ -150,7 +155,9 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         // Tab indents a multi-line selection; otherwise it inserts a soft tab.
         Action::InsertTab => {
             if model.focus == Focus::Editor
-                && model.active_buffer().is_some_and(|b| b.selection_is_multiline())
+                && model
+                    .active_buffer()
+                    .is_some_and(|b| b.selection_is_multiline())
             {
                 mutate(model, |b| b.indent_selection())
             } else {
@@ -179,32 +186,34 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         Action::MoveLineDown => mutate(model, |b| b.move_lines(1)),
         Action::Copy => {
             if let Some(buf) = model.active_buffer()
-                && let Some(sel) = buf.selected_text() {
-                    model.internal_clipboard = sel.clone();
-                    let toast = model.show_toast("Copied to clipboard");
-                    return vec![Cmd::SetClipboard(sel), toast];
-                }
+                && let Some(sel) = buf.selected_text()
+            {
+                model.internal_clipboard = sel.clone();
+                let toast = model.show_toast("Copied to clipboard");
+                return vec![Cmd::SetClipboard(sel), toast];
+            }
             Vec::new()
         }
         // Cut deletes, so on a read-only tab it degrades to a plain copy.
         Action::Cut if model.active_read_only() => apply_action(model, Action::Copy),
         Action::Cut => {
             if let Some(buf) = model.active_buffer_mut()
-                && let Some(sel) = buf.selected_text() {
-                    buf.delete_selection();
-                    model.internal_clipboard = sel.clone();
-                    ensure_cursor_visible(model);
-                    let mut cmds = vec![Cmd::SetClipboard(sel)];
-                    cmds.extend(super::lsp::notify_change(model));
-                    cmds.push(model.show_toast("Cut to clipboard"));
-                    return cmds;
-                }
+                && let Some(sel) = buf.selected_text()
+            {
+                buf.delete_selection();
+                model.internal_clipboard = sel.clone();
+                ensure_cursor_visible(model);
+                let mut cmds = vec![Cmd::SetClipboard(sel)];
+                cmds.extend(super::lsp::notify_change(model));
+                cmds.push(model.show_toast("Cut to clipboard"));
+                return cmds;
+            }
             Vec::new()
         }
- Action::Paste => {
- let text = read_clipboard(model);
- paste_into_editor(model, &text)
- }
+        Action::Paste => {
+            let text = read_clipboard(model);
+            paste_into_editor(model, &text)
+        }
 
         // ----- Sidebar navigation -----
         // In the Git panel the arrows drive the change list, so they stay put
@@ -293,7 +302,7 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         // ----- In-editor find / replace (typing handled by the input widget) -----
         Action::OpenFind => open_find(model, false),
         Action::OpenFindReplace => open_find(model, true),
- Action::OpenQuickbar => open_quickbar(model),
+        Action::OpenQuickbar => open_quickbar(model),
         Action::FindNext => {
             find_step(model, 1);
             Vec::new()

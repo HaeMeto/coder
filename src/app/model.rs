@@ -41,7 +41,7 @@ impl Panel {
             Panel::Search => "\u{f002}",
             Panel::Git => "\u{f419}",
             Panel::Extensions => "\u{f12e}",
-            Panel::Themes => "\u{f1fc}", // palette
+            Panel::Themes => "\u{f1fc}",   // palette
             Panel::Settings => "\u{f013}", // gear
         }
     }
@@ -72,9 +72,9 @@ impl Panel {
 /// Editor preferences applied at save time. Edited via `config.toml`, not the UI.
 pub struct SettingsState {
     /// Master switch: run the enabled format actions when saving.
- pub format_on_save: bool,
- /// Run the language formatter after a paste (off by default).
- pub format_on_paste: bool,
+    pub format_on_save: bool,
+    /// Run the language formatter after a paste (off by default).
+    pub format_on_paste: bool,
     /// Strip trailing spaces/tabs from each line on save (when format_on_save).
     pub trim_trailing_whitespace: bool,
     /// Ensure the file ends with a single newline on save (when format_on_save).
@@ -86,8 +86,8 @@ pub struct SettingsState {
 impl Default for SettingsState {
     fn default() -> Self {
         SettingsState {
- format_on_save: false,
- format_on_paste: false,
+            format_on_save: false,
+            format_on_paste: false,
             trim_trailing_whitespace: true,
             insert_final_newline: true,
             inline_diagnostics: true,
@@ -306,7 +306,6 @@ pub struct SearchState {
     pub selected: usize,
 }
 
-
 /// Keyboard focus zone inside the Git panel, cycled with Tab.
 ///
 /// The zone decides what Enter activates and which widget is drawn highlighted.
@@ -408,7 +407,9 @@ impl GitStatus {
         if idx < self.staged.len() {
             self.staged.get(idx).map(|e| (e, true))
         } else {
-            self.unstaged.get(idx - self.staged.len()).map(|e| (e, false))
+            self.unstaged
+                .get(idx - self.staged.len())
+                .map(|e| (e, false))
         }
     }
 }
@@ -463,9 +464,9 @@ pub enum DialogAction {
     ResetKeybindings,
     /// Overwrite `config.toml` with the seeded defaults.
     ResetConfig,
- /// Switch the workspace root to the folder typed in the dialog (VSCode
- /// "open folder").
- OpenWorkspace,
+    /// Switch the workspace root to the folder typed in the dialog (VSCode
+    /// "open folder").
+    OpenWorkspace,
     /// The quit confirmation when unsaved changes exist (`DialogKind::AskSave`):
     /// branches on `Dialog.selected` rather than carrying its own payload.
     QuitPrompt,
@@ -750,82 +751,81 @@ pub struct Diagnostic {
     pub message: String,
 }
 
-
 /// A selectable entry in the quickbar (command palette), opened with Ctrl+P.
 /// Entries mix workspace files, workspace directories, and built-in commands.
 #[derive(Clone)]
 pub enum QuickbarItem {
- /// Open this file in the editor. `rel` is the workspace-relative path used
- /// for display and prefix filtering (what the user sees and types against).
- File { path: PathBuf, rel: String },
- /// Open this folder as a new workspace root (VSCode "open folder"), switching
- /// the file explorer, git panel and search to that directory.
- OpenFolder,
- /// Create a new file inside the workspace root (opens the name dialog).
- NewFile,
- /// Create a new folder inside the workspace root (opens the name dialog).
- NewFolder,
- /// Open the given sidebar panel.
- Panel(Panel),
+    /// Open this file in the editor. `rel` is the workspace-relative path used
+    /// for display and prefix filtering (what the user sees and types against).
+    File { path: PathBuf, rel: String },
+    /// Open this folder as a new workspace root (VSCode "open folder"), switching
+    /// the file explorer, git panel and search to that directory.
+    OpenFolder,
+    /// Create a new file inside the workspace root (opens the name dialog).
+    NewFile,
+    /// Create a new folder inside the workspace root (opens the name dialog).
+    NewFolder,
+    /// Open the given sidebar panel.
+    Panel(Panel),
 }
 
 impl QuickbarItem {
- /// A one-char marker rendered before each entry so its kind is clear at a
- /// glance: file, directory, new-entry, or command.
- pub fn marker(&self) -> char {
- match self {
- QuickbarItem::File { .. } => 'F',
- QuickbarItem::OpenFolder => '>',
- QuickbarItem::NewFile => '+',
- QuickbarItem::NewFolder => '+',
- QuickbarItem::Panel(_) => '>',
- }
- }
+    /// A one-char marker rendered before each entry so its kind is clear at a
+    /// glance: file, directory, new-entry, or command.
+    pub fn marker(&self) -> char {
+        match self {
+            QuickbarItem::File { .. } => 'F',
+            QuickbarItem::OpenFolder => '>',
+            QuickbarItem::NewFile => '+',
+            QuickbarItem::NewFolder => '+',
+            QuickbarItem::Panel(_) => '>',
+        }
+    }
 
- /// The label shown for the entry. For files/dirs this is the workspace-
- /// relative path; for commands a human title.
- pub fn label(&self) -> String {
- match self {
- QuickbarItem::File { rel, .. } => rel.clone(),
- QuickbarItem::OpenFolder => "Open Folder...".into(),
- QuickbarItem::NewFile => "New File".into(),
- QuickbarItem::NewFolder => "New Folder".into(),
- QuickbarItem::Panel(p) => format!("Open panel: {}", p.title()),
- }
- }
+    /// The label shown for the entry. For files/dirs this is the workspace-
+    /// relative path; for commands a human title.
+    pub fn label(&self) -> String {
+        match self {
+            QuickbarItem::File { rel, .. } => rel.clone(),
+            QuickbarItem::OpenFolder => "Open Folder...".into(),
+            QuickbarItem::NewFile => "New File".into(),
+            QuickbarItem::NewFolder => "New Folder".into(),
+            QuickbarItem::Panel(p) => format!("Open panel: {}", p.title()),
+        }
+    }
 
- /// The query text that selects this entry (what the filter matches).
- pub fn filter_text(&self) -> String {
- self.label().to_lowercase()
- }
+    /// The query text that selects this entry (what the filter matches).
+    pub fn filter_text(&self) -> String {
+        self.label().to_lowercase()
+    }
 }
 
 /// The quickbar overlay: an input query up top and a filtered list below.
 /// Sort/filter happens in `update` (never here); this is pure state.
 pub struct QuickbarState {
- /// The query being typed; filtered against entry `filter_text`.
- pub input: TextInputState,
- /// Every workspace file (from `Msg::FilesListed`), used to build `items`.
- pub files: Vec<PathBuf>,
- /// Whether the async workspace file listing has been delivered.
- pub files_loaded: bool,
- /// Candidate entries (workspace files plus commands), freshly filtered to
- /// the current query. This is what is rendered and traversed by ↑/↓/Enter.
- pub items: Vec<QuickbarItem>,
- /// Index of the highlighted row within `items`.
- pub selected: usize,
+    /// The query being typed; filtered against entry `filter_text`.
+    pub input: TextInputState,
+    /// Every workspace file (from `Msg::FilesListed`), used to build `items`.
+    pub files: Vec<PathBuf>,
+    /// Whether the async workspace file listing has been delivered.
+    pub files_loaded: bool,
+    /// Candidate entries (workspace files plus commands), freshly filtered to
+    /// the current query. This is what is rendered and traversed by ↑/↓/Enter.
+    pub items: Vec<QuickbarItem>,
+    /// Index of the highlighted row within `items`.
+    pub selected: usize,
 }
 
 impl QuickbarState {
- pub fn new() -> Self {
- QuickbarState {
- input: TextInputState::default(),
- files: Vec::new(),
- files_loaded: false,
- items: Vec::new(),
- selected: 0,
- }
- }
+    pub fn new() -> Self {
+        QuickbarState {
+            input: TextInputState::default(),
+            files: Vec::new(),
+            files_loaded: false,
+            items: Vec::new(),
+            selected: 0,
+        }
+    }
 }
 
 pub struct Model {
@@ -839,9 +839,9 @@ pub struct Model {
     pub should_quit: bool,
     /// User-editable keyboard shortcuts (loaded from `keybindings.toml`).
     pub keybindings: crate::services::keybindings::Keybindings,
- /// Leader/unlock mode: while true, locked commands fire directly instead of
- /// falling through to typing/motion (see `Action::Leader`).
- pub leader: bool,
+    /// Leader/unlock mode: while true, locked commands fire directly instead of
+    /// falling through to typing/motion (see `Action::Leader`).
+    pub leader: bool,
     pub internal_clipboard: String,
     pub theme: Theme,
     /// Last known terminal size — for mouse hit-testing and layout.
@@ -878,9 +878,9 @@ pub struct Model {
     pub dialog: Option<Dialog>,
     /// The open file-tree context menu (captures all input when present).
     pub context_menu: Option<ContextMenu>,
- /// The open quickbar (command palette) overlay, if any. It captures all input
- /// while present, like `Dialog`/`ContextMenu`.
- pub quickbar: Option<QuickbarState>,
+    /// The open quickbar (command palette) overlay, if any. It captures all input
+    /// while present, like `Dialog`/`ContextMenu`.
+    pub quickbar: Option<QuickbarState>,
     /// Change-gutter markers for the active buffer, keyed by line index.
     pub active_git_marks: std::collections::HashMap<usize, GutterKind>,
     /// Which tab the current git-diff markers were computed for. The diff is
@@ -1015,7 +1015,7 @@ impl Model {
             layout: LayoutState::default(),
             focus: Focus::Sidebar,
             should_quit: false,
- leader: false,
+            leader: false,
             internal_clipboard: String::new(),
             // Keep the UI palette and the syntax theme consistent at startup.
             theme: highlight::theme_for(highlight::DEFAULT_THEME),
@@ -1084,8 +1084,14 @@ impl Model {
             .and_then(|b| b.path.as_ref())
             .and_then(|p| self.diagnostics.get(p))
             .map(|diags| {
-                let e = diags.iter().filter(|d| d.severity == Severity::Error).count();
-                let w = diags.iter().filter(|d| d.severity == Severity::Warning).count();
+                let e = diags
+                    .iter()
+                    .filter(|d| d.severity == Severity::Error)
+                    .count();
+                let w = diags
+                    .iter()
+                    .filter(|d| d.severity == Severity::Warning)
+                    .count();
                 (e, w)
             })
             .unwrap_or((0, 0))
@@ -1169,7 +1175,7 @@ impl Model {
     /// Invalidates highlighting (content replaced externally, or theme changed):
     /// drops the shown colors so text falls back to plain until the worker — which
     /// is told to reset its cache — returns fresh ones.
- pub fn invalidate_highlight(&mut self) {
+    pub fn invalidate_highlight(&mut self) {
         self.hl_reset = true;
         self.hl_sent = None;
         self.display_key = None;
@@ -1179,48 +1185,48 @@ impl Model {
     }
 
     /// VSCode "open folder": switch the whole workspace to `root`. The file
- /// explorer, git panel and search state reset for the new root, and every
- /// editor tab / LSP session is dropped, while user preferences (theme,
- /// settings, keybindings) and the window layout survive. This is pure state
- /// work — the caller must issue the rescan `Cmd`s afterwards.
- pub fn open_folder(&mut self, root: PathBuf) {
- self.root = root.clone();
- // Keep `sidebar.settings`/`sidebar.themes` (preferences) but reset every
- // root-dependent sub-panel.
- self.sidebar.files = FileTree::new(root.clone());
- self.sidebar.git = GitStatus::default();
- self.sidebar.search = SearchState::default();
- self.sidebar.settings_selected = 0;
- self.sidebar.active = Panel::Files;
+    /// explorer, git panel and search state reset for the new root, and every
+    /// editor tab / LSP session is dropped, while user preferences (theme,
+    /// settings, keybindings) and the window layout survive. This is pure state
+    /// work — the caller must issue the rescan `Cmd`s afterwards.
+    pub fn open_folder(&mut self, root: PathBuf) {
+        self.root = root.clone();
+        // Keep `sidebar.settings`/`sidebar.themes` (preferences) but reset every
+        // root-dependent sub-panel.
+        self.sidebar.files = FileTree::new(root.clone());
+        self.sidebar.git = GitStatus::default();
+        self.sidebar.search = SearchState::default();
+        self.sidebar.settings_selected = 0;
+        self.sidebar.active = Panel::Files;
 
- self.tabs = Vec::new();
- self.active_tab = None;
- self.find = FindState::default();
- self.lsp = LspState::default();
- self.diagnostics = std::collections::HashMap::new();
- self.completion = None;
- self.pending_format = None;
+        self.tabs = Vec::new();
+        self.active_tab = None;
+        self.find = FindState::default();
+        self.lsp = LspState::default();
+        self.diagnostics = std::collections::HashMap::new();
+        self.completion = None;
+        self.pending_format = None;
 
- // Close any transient overlay / drag so it never references a stale root.
- self.dialog = None;
- self.context_menu = None;
- self.quickbar = None;
- self.drag = None;
- self.pending_goto = None;
- self.pending_diff = None;
- self.pending_diff_scroll = None;
+        // Close any transient overlay / drag so it never references a stale root.
+        self.dialog = None;
+        self.context_menu = None;
+        self.quickbar = None;
+        self.drag = None;
+        self.pending_goto = None;
+        self.pending_diff = None;
+        self.pending_diff_scroll = None;
 
- // Invalidate every cached render target.
- self.invalidate_highlight();
- self.active_git_marks = std::collections::HashMap::new();
- self.active_git_marks_tab = None;
- self.active_deleted = Vec::new();
- self.autocomplete_at = None;
- self.didchange_at = None;
+        // Invalidate every cached render target.
+        self.invalidate_highlight();
+        self.active_git_marks = std::collections::HashMap::new();
+        self.active_git_marks_tab = None;
+        self.active_deleted = Vec::new();
+        self.autocomplete_at = None;
+        self.didchange_at = None;
 
- self.focus = Focus::Sidebar;
- self.layout.sidebar_open = true;
- }
+        self.focus = Focus::Sidebar;
+        self.layout.sidebar_open = true;
+    }
 
     /// Schedules a debounced autocomplete request ~400ms out, resetting the timer
     /// on every keystroke so the server is only asked once typing pauses.
@@ -1231,8 +1237,7 @@ impl Model {
 
     /// Schedules a debounced LSP `didChange` flush ~1s out (reset on every edit).
     pub fn schedule_didchange(&mut self) {
-        self.didchange_at =
-            Some(std::time::Instant::now() + std::time::Duration::from_secs(1));
+        self.didchange_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(1));
     }
 
     /// Cancels any pending autocomplete deadline (e.g. the popup was dismissed).
@@ -1249,7 +1254,8 @@ impl Model {
     /// burst of typing writes the session file once it pauses rather than on
     /// every keystroke.
     pub fn schedule_session_save(&mut self) {
-        self.session_save_at = Some(std::time::Instant::now() + crate::services::session::CHECKPOINT_DEBOUNCE);
+        self.session_save_at =
+            Some(std::time::Instant::now() + crate::services::session::CHECKPOINT_DEBOUNCE);
     }
 
     /// Returns `(autocomplete_due, didchange_due, session_save_due)` for
@@ -1282,7 +1288,7 @@ impl Model {
     /// `services::session::Content`); large dirty files diff against their
     /// current on-disk text where one is still readable, else keep full text.
     pub fn session_snapshot(&self) -> crate::services::session::SessionSnapshot {
-        use crate::services::session::{Content, TabEntry, DIFF_THRESHOLD_BYTES};
+        use crate::services::session::{Content, DIFF_THRESHOLD_BYTES, TabEntry};
         let tabs = self
             .tabs
             .iter()
@@ -1310,12 +1316,20 @@ impl Model {
                         .or(Some(Content::Full { text: text.clone() }))
                 };
                 TabEntry {
-                    kind: if t.untitled_id.is_some() { "untitled".into() } else { "file".into() },
+                    kind: if t.untitled_id.is_some() {
+                        "untitled".into()
+                    } else {
+                        "file".into()
+                    },
                     path: buf.path.as_ref().map(|p| p.display().to_string()),
                     untitled_id: t.untitled_id.clone(),
                     // Only an untitled tab's label ("Untitled-N") is worth
                     // persisting — a file tab derives its title from the path.
-                    label: if t.untitled_id.is_some() { t.label.clone() } else { None },
+                    label: if t.untitled_id.is_some() {
+                        t.label.clone()
+                    } else {
+                        None
+                    },
                     line: buf.cursor.line,
                     col: buf.cursor.col,
                     scroll_y: buf.scroll_y,
@@ -1521,7 +1535,7 @@ impl Model {
         }
         let s = &mut self.sidebar.settings;
         s.format_on_save = config.format_on_save;
- s.format_on_paste = config.format_on_paste;
+        s.format_on_paste = config.format_on_paste;
         s.trim_trailing_whitespace = config.trim_trailing_whitespace;
         s.insert_final_newline = config.insert_final_newline;
         s.inline_diagnostics = config.inline_diagnostics;
@@ -1539,8 +1553,8 @@ impl Model {
         let s = &self.sidebar.settings;
         crate::services::config::Config {
             theme: self.current_theme_name().to_string(),
- format_on_save: s.format_on_save,
- format_on_paste: s.format_on_paste,
+            format_on_save: s.format_on_save,
+            format_on_paste: s.format_on_paste,
             trim_trailing_whitespace: s.trim_trailing_whitespace,
             insert_final_newline: s.insert_final_newline,
             inline_diagnostics: s.inline_diagnostics,
@@ -1612,13 +1626,17 @@ impl Model {
 
     /// Whether the active tab is a diff-mode tab (changed lines get a colored background).
     pub fn active_is_diff(&self) -> bool {
-        self.active_tab.map(|i| self.tabs[i].diff_mode).unwrap_or(false)
+        self.active_tab
+            .map(|i| self.tabs[i].diff_mode)
+            .unwrap_or(false)
     }
 
     /// The open "<hash> diff" tab for a commit, if any.
     pub fn commit_diff_tab_index(&self, hash: &str) -> Option<usize> {
         let label = format!("{hash} diff");
-        self.tabs.iter().position(|t| t.label.as_deref() == Some(label.as_str()))
+        self.tabs
+            .iter()
+            .position(|t| t.label.as_deref() == Some(label.as_str()))
     }
 
     /// What the active tab's buffer line `row` is, when it is a commit's diff
@@ -1651,7 +1669,9 @@ impl Model {
 
     /// Whether the active tab holds generated content that must not be edited.
     pub fn active_read_only(&self) -> bool {
-        self.active_tab.map(|i| self.tabs[i].read_only).unwrap_or(false)
+        self.active_tab
+            .map(|i| self.tabs[i].read_only)
+            .unwrap_or(false)
     }
 
     /// The notice message of the active tab, if it is a read-only error tab.
@@ -1716,8 +1736,14 @@ mod tests {
         assert_eq!(g.changes_len(), 3);
         assert_eq!(g.nav_len(), 5);
         // The change rows come first: they resolve as entries, not commits.
-        assert_eq!(g.entry_at(0).map(|(e, staged)| (e.rel.as_str(), staged)), Some(("a.rs", true)));
-        assert_eq!(g.entry_at(2).map(|(e, staged)| (e.rel.as_str(), staged)), Some(("c.rs", false)));
+        assert_eq!(
+            g.entry_at(0).map(|(e, staged)| (e.rel.as_str(), staged)),
+            Some(("a.rs", true))
+        );
+        assert_eq!(
+            g.entry_at(2).map(|(e, staged)| (e.rel.as_str(), staged)),
+            Some(("c.rs", false))
+        );
         assert!(g.commit_at(2).is_none());
         // The history follows, in order.
         assert_eq!(g.commit_at(3).map(|c| c.hash.as_str()), Some("aaaaaaa"));
@@ -1740,6 +1766,9 @@ mod tests {
         assert!(tab.diff_mode); // green/red backgrounds, like an uncommitted change
         assert_eq!(tab.head_text.as_deref(), Some("a\nb\n"));
         // The synthetic path only picks the syntax the code is colored with.
-        assert_eq!(tab.buffer.path.as_deref(), Some(std::path::Path::new("2ea14b1.rs")));
+        assert_eq!(
+            tab.buffer.path.as_deref(),
+            Some(std::path::Path::new("2ea14b1.rs"))
+        );
     }
 }

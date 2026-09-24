@@ -25,7 +25,12 @@ pub fn menu_rect(m: &ContextMenu, term: Rect) -> Rect {
     // Flip/shift back when the menu would run off the right or bottom edge.
     let x = m.x.min(term.width.saturating_sub(width));
     let y = m.y.min(term.height.saturating_sub(height));
-    Rect { x, y, width, height }
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
 }
 
 pub fn render(frame: &mut Frame, model: &Model) {
@@ -96,7 +101,12 @@ mod tests {
     use crate::app::model::{ContextMenu, MenuItem};
     use ratatui::layout::Rect;
 
-    const TERM: Rect = Rect { x: 0, y: 0, width: 80, height: 24 };
+    const TERM: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 24,
+    };
 
     #[test]
     fn menu_stays_on_screen_when_opened_at_the_edge() {

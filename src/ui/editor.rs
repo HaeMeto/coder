@@ -7,9 +7,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::app::model::{Diagnostic, DiffRow, Focus, Model};
-use crate::services::git::CommitRow;
 use crate::core::buffer::Cursor;
 use crate::core::theme::Theme;
+use crate::services::git::CommitRow;
 use crate::services::git::GutterKind;
 use crate::services::lsp::Severity;
 
@@ -62,7 +62,8 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
         .unwrap_or(&[]);
     // Most-severe diagnostic per line: colors the line number, and (when
     // `inline_diagnostics` is on) its message trails the line.
-    let mut best_by_line: std::collections::HashMap<usize, &Diagnostic> = std::collections::HashMap::new();
+    let mut best_by_line: std::collections::HashMap<usize, &Diagnostic> =
+        std::collections::HashMap::new();
     for d in diags {
         best_by_line
             .entry(d.line)
@@ -105,11 +106,21 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
                 };
                 let mut spans: Vec<Span> = Vec::new();
                 // Git change marker column (leftmost), when the file is tracked.
-                let mark = if git_on { model.active_git_marks.get(&row).copied() } else { None };
+                let mark = if git_on {
+                    model.active_git_marks.get(&row).copied()
+                } else {
+                    None
+                };
                 if git_on {
                     let (ch, color) = match mark {
-                        Some(GutterKind::Added) => (if model.ascii_icons { "|" } else { "▍" }, model.theme.git_added),
-                        Some(GutterKind::Deleted) => (if model.ascii_icons { "_" } else { "▁" }, model.theme.git_deleted),
+                        Some(GutterKind::Added) => (
+                            if model.ascii_icons { "|" } else { "▍" },
+                            model.theme.git_added,
+                        ),
+                        Some(GutterKind::Deleted) => (
+                            if model.ascii_icons { "_" } else { "▁" },
+                            model.theme.git_deleted,
+                        ),
                         None => (" ", model.theme.bg),
                     };
                     spans.push(Span::styled(ch.to_string(), Style::new().fg(color)));
@@ -176,7 +187,9 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
         overlay_diagnostics(frame, area, buf, gutter_w, diags, display, disp_start);
     }
     if let Some((start, end)) = selection {
-        overlay_selection(frame, area, model, buf, gutter_w, start, end, display, disp_start);
+        overlay_selection(
+            frame, area, model, buf, gutter_w, start, end, display, disp_start,
+        );
     }
     // Find matches paint over the selection so the active match's color wins.
     if model.find.open && !model.find.matches.is_empty() {
@@ -190,11 +203,7 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model, gutter_w: u16) {
         && let Some((cx, cy)) = cursor_screen_pos(model, area, gutter_w)
         && let Some(cell) = frame.buffer_mut().cell_mut((cx, cy))
     {
-        cell.set_style(
-            Style::new()
-                .bg(Color::White)
-                .fg(model.theme.bg),
-        );
+        cell.set_style(Style::new().bg(Color::White).fg(model.theme.bg));
     }
 }
 
@@ -394,8 +403,7 @@ fn file_heading_line(model: &Model, text: &str, gutter: String, text_w: usize) -
             if head.chars().count() + added.chars().count() + removed.chars().count() + 3
                 <= text_w =>
         {
-            let used =
-                head.chars().count() + added.chars().count() + removed.chars().count() + 3;
+            let used = head.chars().count() + added.chars().count() + removed.chars().count() + 3;
             spans.push(Span::styled(head.to_string(), name_style));
             spans.push(Span::raw("  "));
             spans.push(Span::styled(
@@ -450,7 +458,10 @@ fn deleted_row(
     }
     // Empty line-number column (the removed line has no number in the new file).
     let num_w = (gutter_w as usize).saturating_sub(if git_on { 2 } else { 1 });
-    spans.push(Span::styled(format!("{:>num_w$} ", "-"), Style::new().fg(th.git_deleted)));
+    spans.push(Span::styled(
+        format!("{:>num_w$} ", "-"),
+        Style::new().fg(th.git_deleted),
+    ));
     // Removed text, clipped to the horizontal scroll window — one span for the
     // whole visible slice, not one per character.
     let mut visible = String::new();
@@ -526,7 +537,15 @@ fn append_text_spans(
         _ => {
             // Plain text when there is no highlight.
             let text = buf.line_text(row);
-            push_piece(spans, &text, model.theme.fg, scroll_x, width, &mut col, &mut taken);
+            push_piece(
+                spans,
+                &text,
+                model.theme.fg,
+                scroll_x,
+                width,
+                &mut col,
+                &mut taken,
+            );
         }
     }
 }
@@ -540,10 +559,7 @@ pub fn render_scrollbar(frame: &mut Frame, area: Rect, model: &Model) {
         return;
     }
     let Some(buf) = model.active_buffer() else {
-        frame.render_widget(
-            Paragraph::new("").style(Style::new().bg(th.bg_alt)),
-            area,
-        );
+        frame.render_widget(Paragraph::new("").style(Style::new().bg(th.bg_alt)), area);
         return;
     };
     let n = buf.line_count().max(1);
@@ -639,7 +655,11 @@ fn overlay_find_matches(
             let line_start = buf.rope.line_to_char(row);
             let line_len = buf.line_len(row);
             let col_start = if row == s_line { s - line_start } else { 0 };
-            let col_end = if row == e_line { (e - line_start).min(line_len) } else { line_len };
+            let col_end = if row == e_line {
+                (e - line_start).min(line_len)
+            } else {
+                line_len
+            };
             let y = area.y + (disp - disp_start) as u16;
             for col in col_start..col_end {
                 if col < scroll_x {

@@ -4,15 +4,15 @@ pub mod activity_bar;
 pub mod completion;
 pub mod context_menu;
 pub mod dialog;
-pub mod quickbar;
 pub mod editor;
 pub mod find;
+pub mod quickbar;
 pub mod sidebar;
 pub mod statusbar;
 pub mod tabs;
 pub mod terminal;
-pub mod toast;
 pub mod text_input;
+pub mod toast;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -74,14 +74,17 @@ pub fn compute_areas(model: &Model, area: Rect) -> Areas {
             .layout
             .terminal_height
             .min(editor_col.height.saturating_sub(3));
-        let [tabs_and_body, term] = Layout::vertical([
-            Constraint::Min(1),
-            Constraint::Length(th.max(1)),
-        ])
-        .areas(editor_col);
+        let [tabs_and_body, term] =
+            Layout::vertical([Constraint::Min(1), Constraint::Length(th.max(1))]).areas(editor_col);
         (tabs_and_body, term)
     } else {
-        (editor_col, Rect { height: 0, ..editor_col })
+        (
+            editor_col,
+            Rect {
+                height: 0,
+                ..editor_col
+            },
+        )
     };
 
     let [tabs, editor_full] =
@@ -95,7 +98,13 @@ pub fn compute_areas(model: &Model, area: Rect) -> Areas {
             Layout::horizontal([Constraint::Min(1), Constraint::Length(1)]).areas(editor_full);
         (e, sb)
     } else {
-        (editor_full, Rect { width: 0, ..editor_full })
+        (
+            editor_full,
+            Rect {
+                width: 0,
+                ..editor_full
+            },
+        )
     };
 
     let editor_text_x = editor.x + gutter_w;
@@ -152,11 +161,11 @@ pub fn view(frame: &mut Frame, model: &Model) {
     if model.dialog.is_some() {
         dialog::render(frame, model);
     }
- 
- // Quickbar is the topmost overlay (above even the dialog).
- if model.quickbar.is_some() {
- quickbar::render(frame, model);
- }
+
+    // Quickbar is the topmost overlay (above even the dialog).
+    if model.quickbar.is_some() {
+        quickbar::render(frame, model);
+    }
 
     // Toast floats bottom-center over everything.
     toast::render(frame, area, model);

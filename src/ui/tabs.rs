@@ -13,7 +13,9 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
     if model.tabs.is_empty() {
         spans.push(Span::styled(
             " No file open ",
-            Style::new().fg(model.theme.fg_dim).bg(model.theme.tab_inactive_bg),
+            Style::new()
+                .fg(model.theme.fg_dim)
+                .bg(model.theme.tab_inactive_bg),
         ));
     }
     for (i, tab) in model.tabs.iter().enumerate() {
@@ -28,16 +30,16 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
         if active {
             style = style.add_modifier(Modifier::BOLD);
         }
-        spans.push(Span::styled(
-            format!(" {} {} ", tab.title(), dirty),
-            style,
-        ));
+        spans.push(Span::styled(format!(" {} {} ", tab.title(), dirty), style));
         // Close button (clicking it closes the tab).
         spans.push(Span::styled(
             "✕ ",
             Style::new().fg(model.theme.fg_dim).bg(bg),
         ));
-        spans.push(Span::styled("│", Style::new().fg(model.theme.border).bg(bg)));
+        spans.push(Span::styled(
+            "│",
+            Style::new().fg(model.theme.border).bg(bg),
+        ));
     }
     let p = Paragraph::new(Line::from(spans)).style(Style::new().bg(model.theme.tab_inactive_bg));
     frame.render_widget(p, area);

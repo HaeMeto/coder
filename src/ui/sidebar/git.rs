@@ -358,10 +358,7 @@ fn render_git_actions(frame: &mut Frame, area: Rect, l: &GitLayout, model: &Mode
     // `action_at_col` so the visuals and hit-testing line up exactly.
     let zone = g.zone;
     let cell = |label: &str, enabled: bool, w: usize, z: GitZone| -> Span<'static> {
-        Span::styled(
-            format!("{label:^w$}"),
-            button_style(th, enabled, zone == z),
-        )
+        Span::styled(format!("{label:^w$}"), button_style(th, enabled, zone == z))
     };
 
     let gap = || Span::styled(" ", Style::new().bg(th.bg_alt));
@@ -450,7 +447,11 @@ fn commit_line(
     } else {
         c.summary.clone()
     };
-    let bg = if selected { th.selected_bg() } else { th.bg_alt };
+    let bg = if selected {
+        th.selected_bg()
+    } else {
+        th.bg_alt
+    };
     Line::from(vec![
         Span::styled(hash, Style::new().fg(th.accent)),
         Span::styled(summary, Style::new().fg(th.fg_dim)),
