@@ -66,7 +66,6 @@ fn is_reset(item: SettingsItem) -> bool {
 
 pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
     let sel = model.sidebar.settings_selected;
-    let ascii = model.ascii_icons;
 
     let mut lines: Vec<Line> = Vec::new();
     for cell in LAYOUT {
@@ -78,11 +77,8 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
         let selected = i == sel;
         // Reset rows get a ⟲ marker; the toggle's own "[x]" is its indent;
         // plain edit rows are indented level with the text.
-        let icon = if is_reset(item) {
-            if ascii { "R " } else { "\u{27f2} " }
-        } else {
-            "  "
-        };
+        // ⟲ is plain Unicode (no Nerd Font needed), so ASCII mode uses it too.
+        let icon = if is_reset(item) { "\u{27f2} " } else { "  " };
         let text_style = if selected {
             Style::new().fg(model.theme.fg)
         } else {

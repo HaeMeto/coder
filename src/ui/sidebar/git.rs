@@ -292,8 +292,10 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
 
     // Branch row at the very top, with a Refresh button pinned to the right.
     if l.branch_shown {
-        let refresh_icon = if model.ascii_icons { "[R]" } else { " ⟳ " };
-        let name_w = width.saturating_sub(refresh_icon.chars().count());
+        // Both glyphs fill `REFRESH_W` cells, so the click target in
+        // `git_hit` lines up either way.
+        let refresh_icon = if model.ascii_icons { " ⟲ " } else { " ⟳ " };
+        let name_w = width.saturating_sub(REFRESH_W);
         let name = model.sidebar.git.branch.clone().unwrap_or_default();
         let branch = Paragraph::new(Line::from(vec![
             Span::styled(format!("{name:<name_w$}"), Style::new().fg(th.fg)),
@@ -543,7 +545,8 @@ fn entry_line(
             Style::new().fg(th.git_deleted),
         ));
     } else {
-        let revert = if model.ascii_icons { "x" } else { "↺ " };
+        // Both are 2 cells wide, matching the `git_hit` revert target.
+        let revert = if model.ascii_icons { "⟲ " } else { "↺ " };
 
         spans.push(Span::styled(
             revert.to_string(),

@@ -46,14 +46,16 @@ impl Panel {
         }
     }
 
+    /// Fallback icons when Nerd Font glyphs are off (`ascii_icons`): plain
+    /// emoji, which every modern terminal font renders without a patched font.
     pub fn ascii_icon(&self) -> &'static str {
         match self {
-            Panel::Files => "Fil",
-            Panel::Search => "Src",
-            Panel::Git => "Git",
-            Panel::Extensions => "Ext",
-            Panel::Themes => "Thm",
-            Panel::Settings => "Set",
+            Panel::Files => "📁",
+            Panel::Search => "🔍",
+            Panel::Git => "🔀",
+            Panel::Extensions => "📖",
+            Panel::Themes => "🔦",
+            Panel::Settings => "⚙️",
         }
     }
 

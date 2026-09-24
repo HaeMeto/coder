@@ -11,7 +11,7 @@ cargo test               # unit tests (core/buffer, services/git)
 cargo clippy             # lint (kept warning-free)
 ```
 
-Environment: `CODER_ASCII=1` uses ASCII instead of Nerd Font icons. `CODER_EXTENSIONS` overrides extensions dir (default `~/.config/coder/extensions`).
+Environment: `CODER_ASCII=1` uses ASCII instead of Nerd Font icons (activity-bar panel icons fall back to emoji, `Panel::ascii_icon`). `CODER_EXTENSIONS` overrides extensions dir (default `~/.config/coder/extensions`).
 
 ## Architecture (Elm Architecture)
 

@@ -76,7 +76,7 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
     let title = Paragraph::new(Line::from(Span::styled(
         format!(
             "{} {} ",
-            model.sidebar.active.icon(),
+            model.panel_icon(model.sidebar.active),
             model.sidebar.active.title()
         ),
         Style::new()
