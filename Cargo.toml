@@ -16,9 +16,15 @@ ratatui = "0.30.2"
 crossterm = { version = "0.29", features = ["event-stream", "bracketed-paste"] }
 tui-widget-list = "0.15"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "process", "time", "io-util"] }
-ropey = "1.6"
+# No `unicode_lines`/`cr_lines`: only '\n' ends a line (CRLF still works, the
+# '\r' is part of the line ending), agreeing with str::lines, syntect and LSP.
+ropey = { version = "1.6", default-features = false, features = ["simd"] }
 syntect = "5.2"
-git2 = "0.20"
+# No default features: drops git2's `https`/`ssh` (openssl-sys + libssh2-sys).
+# Network ops (fetch/pull/push) already shell out to the user's `git` CLI, so
+# libgit2 only does local work (status, index, commit, diff) and builds with
+# just a C compiler — no OpenSSL headers or pkg-config needed on any platform.
+git2 = { version = "0.20", default-features = false }
 portable-pty = "0.9"
 vt100 = "0.15"
 ignore = "0.4"
@@ -29,7 +35,9 @@ thiserror = "2"
 arboard = "3"
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# preserve_order + arbitrary_precision: pretty-printing a pasted JSON blob
+# never reorders keys or rounds numbers (core::buffer::pretty_print_json).
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"] }
 toml = "0.8"
 notify = "8"
 clap = { version = "4", features = ["derive"] }
