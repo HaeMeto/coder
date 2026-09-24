@@ -88,7 +88,8 @@ pub fn compute_areas(model: &Model, area: Rect) -> Areas {
     };
 
     let [tabs, editor_full] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(editor_body);
+        Layout::vertical([Constraint::Length(tabs::TAB_BAR_HEIGHT), Constraint::Min(0)])
+            .areas(editor_body);
 
     let gutter_w = gutter_width(model);
 

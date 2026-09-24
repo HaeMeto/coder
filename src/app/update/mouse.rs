@@ -100,7 +100,7 @@ pub(super) fn handle_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
         // Middle-click anywhere on a tab closes it (like clicking its ✕).
         MouseEventKind::Down(MouseButton::Middle) => {
             if rect_contains(a.tabs, x, y)
-                && let Some(hit) = ui::tabs::tab_at(model, a.tabs, x)
+                && let Some(hit) = ui::tabs::tab_at(model, a.tabs, x, y)
             {
                 let i = match hit {
                     ui::tabs::TabHit::Select(i) | ui::tabs::TabHit::Close(i) => i,
@@ -174,7 +174,7 @@ fn mouse_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
         return sidebar_click(model, a, x, y);
     }
     if rect_contains(a.tabs, x, y) {
-        match ui::tabs::tab_at(model, a.tabs, x) {
+        match ui::tabs::tab_at(model, a.tabs, x, y) {
             Some(ui::tabs::TabHit::Close(i)) => return close_tab_with_dirty_check(model, i),
             Some(ui::tabs::TabHit::Select(i)) => {
                 model.active_tab = Some(i);
