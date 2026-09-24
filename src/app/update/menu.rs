@@ -13,7 +13,10 @@ pub(super) fn open_file_menu(model: &mut Model, idx: usize, x: u16, y: u16) -> V
 
 /// Opens the tab context menu (Close Others/Right/Left/All) for tab `idx`.
 pub(super) fn open_tab_menu(model: &mut Model, idx: usize, x: u16, y: u16) -> Vec<Cmd> {
-    model.context_menu = Some(ContextMenu::tab(idx, x + 1, y + 1));
+    let Some(id) = model.tabs.get(idx).map(|t| t.id) else {
+        return Vec::new();
+    };
+    model.context_menu = Some(ContextMenu::tab(id, x + 1, y + 1));
     Vec::new()
 }
 
@@ -107,13 +110,19 @@ fn run_item(model: &mut Model, item: MenuItem) -> Vec<Cmd> {
         MenuItem::NewFolder => new_entry_dialog(model, row, true),
         MenuItem::Rename => rename_dialog(model, row),
         MenuItem::Delete => delete_dialog(model, row),
-        MenuItem::CloseOthers => {
-            let all = (0..model.tabs.len()).filter(|&i| i != row).collect();
-            close_tabs(model, all, Some(row))
-        }
-        MenuItem::CloseRight => close_tabs(model, (row + 1..model.tabs.len()).collect(), Some(row)),
-        MenuItem::CloseLeft => close_tabs(model, (0..row).collect(), Some(row)),
         MenuItem::CloseAll => close_tabs(model, (0..model.tabs.len()).collect(), None),
+        // The tab items carry a tab id: resolve it now, the tab may have moved.
+        MenuItem::CloseOthers | MenuItem::CloseRight | MenuItem::CloseLeft => {
+            let Some(row) = model.tab_by_id(row) else {
+                return Vec::new();
+            };
+            let others = match item {
+                MenuItem::CloseOthers => (0..model.tabs.len()).filter(|&i| i != row).collect(),
+                MenuItem::CloseRight => (row + 1..model.tabs.len()).collect(),
+                _ => (0..row).collect(),
+            };
+            close_tabs(model, others, Some(row))
+        }
     }
 }
 

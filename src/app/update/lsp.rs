@@ -232,7 +232,7 @@ pub(super) fn request_completion(model: &Model) -> Vec<Cmd> {
                 uri,
                 line,
                 character,
-                token: (i, version),
+                token: (model.tabs[i].id, version),
             },
         },
     ]
@@ -310,10 +310,10 @@ pub(super) fn completions_arrived(
     token: lsp::Token,
     items: Vec<lsp::CompletionItem>,
 ) -> Vec<Cmd> {
-    let (tab, version) = token;
-    if model.active_tab != Some(tab)
-        || model.tabs.get(tab).map(|t| t.buffer.version) != Some(version)
-    {
+    let Some(tab) = token_tab(model, token) else {
+        return Vec::new(); // tab closed, or the buffer moved on
+    };
+    if model.active_tab != Some(tab) {
         return Vec::new(); // superseded by newer typing / a tab switch
     }
     let buf = &model.tabs[tab].buffer;
@@ -327,7 +327,7 @@ pub(super) fn completions_arrived(
         items,
         selected: 0,
         anchor,
-        tab_index: tab,
+        tab_id: token.0,
     });
     Vec::new()
 }
@@ -375,7 +375,7 @@ fn accept_completion(model: &mut Model) -> Vec<Cmd> {
         return Vec::new();
     };
     // Guard against a tab switch between request and accept.
-    if model.active_tab != Some(comp.tab_index) {
+    if model.active_tab != model.tab_by_id(comp.tab_id) {
         return Vec::new();
     }
     let Some(item) = comp.items.get(comp.selected).cloned() else {
@@ -399,6 +399,22 @@ fn accept_completion(model: &mut Model) -> Vec<Cmd> {
 /// else a standalone formatter tool. `save_after` writes the file once edits
 /// apply (format-on-save). Returns empty when the language has no formatter, so
 /// the caller can fall back to a plain save.
+/// How long a format-on-save waits for the language server before saving anyway.
+const FORMAT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Gives up on an LSP format request (server died, or `FORMAT_TIMEOUT` passed):
+/// a pending format-on-save still writes the unformatted text, so the save the
+/// user asked for is never silently lost.
+pub(super) fn abandon_format(model: &mut Model) -> Vec<Cmd> {
+    let Some(p) = model.pending_format.take() else {
+        return Vec::new();
+    };
+    match model.tab_by_id(p.tab_id) {
+        Some(tab) => finish_format_save(model, tab, p.save_after),
+        None => Vec::new(),
+    }
+}
+
 pub(super) fn request_format(model: &mut Model, save_after: bool) -> Vec<Cmd> {
     let Some(i) = model.active_tab else {
         return Vec::new();
@@ -411,14 +427,18 @@ pub(super) fn request_format(model: &mut Model, save_after: bool) -> Vec<Cmd> {
         None => return Vec::new(),
     };
     let version = model.tabs[i].buffer.version;
-    let token = (i, version);
+    let token = (model.tabs[i].id, version);
 
     if has_lsp
         && model.lsp.initialized.contains(&lang_id)
         && let Some(handle) = model.lsp.sessions.get(&lang_id)
     {
         let to_server = handle.to_server.clone();
-        model.pending_format = Some(PendingFormat { save_after });
+        model.pending_format = Some(PendingFormat {
+            save_after,
+            tab_id: token.0,
+            deadline: std::time::Instant::now() + FORMAT_TIMEOUT,
+        });
         return vec![Cmd::LspSend {
             to_server,
             msg: LspClientMsg::Formatting {
@@ -487,26 +507,40 @@ pub(super) fn format_edits_arrived(
     token: lsp::Token,
     edits: Vec<lsp::RawTextEdit>,
 ) -> Vec<Cmd> {
-    let (tab, version) = token;
     let save_after = model
         .pending_format
         .take()
         .map(|p| p.save_after)
         .unwrap_or(false);
-    let fresh = model.tabs.get(tab).map(|t| t.buffer.version) == Some(version);
-    if fresh && !edits.is_empty() {
+    let Some(tab) = token_tab(model, token) else {
+        // Buffer edited since the request: skip the stale edits but still write
+        // the save the user asked for (of the live text).
+        return model
+            .tab_by_id(token.0)
+            .map(|tab| finish_format_save(model, tab, save_after))
+            .unwrap_or_default();
+    };
+    if !edits.is_empty() {
         apply_text_edits(&mut model.tabs[tab].buffer, &edits);
         if model.active_tab == Some(tab) {
             model.invalidate_highlight();
         }
     }
-    let mut cmds = if fresh && model.active_tab == Some(tab) {
+    let mut cmds = if model.active_tab == Some(tab) {
         notify_change(model)
     } else {
         Vec::new()
     };
     cmds.extend(finish_format_save(model, tab, save_after));
     cmds
+}
+
+/// Resolves a response `Token` to the current index of its tab, or `None` if
+/// the tab is gone or its buffer has been edited since the request.
+fn token_tab(model: &Model, token: lsp::Token) -> Option<usize> {
+    let (id, version) = token;
+    let tab = model.tab_by_id(id)?;
+    (model.tabs[tab].buffer.version == version).then_some(tab)
 }
 
 /// A standalone formatter returned new text: apply it (unless stale) and, for a
@@ -519,15 +553,19 @@ pub(super) fn formatter_output(
     save_after: bool,
 ) -> Vec<Cmd> {
     model.pending_format = None;
-    let (tab, version) = token;
-    let fresh = model.tabs.get(tab).map(|t| t.buffer.version) == Some(version);
-    if fresh && model.tabs[tab].buffer.full_text() != text {
-        model.tabs[tab].buffer.replace_all(&text);
-        if model.active_tab == Some(tab) {
-            model.invalidate_highlight();
-        }
+    let Some(tab) = token_tab(model, token) else {
+        return model
+            .tab_by_id(token.0)
+            .map(|tab| finish_format_save(model, tab, save_after))
+            .unwrap_or_default();
+    };
+    // `replace_all` is a no-op (no version bump) when nothing changed.
+    let before = model.tabs[tab].buffer.version;
+    model.tabs[tab].buffer.replace_all(&text);
+    if model.active_tab == Some(tab) && model.tabs[tab].buffer.version != before {
+        model.invalidate_highlight();
     }
-    let mut cmds = if fresh && model.active_tab == Some(tab) {
+    let mut cmds = if model.active_tab == Some(tab) {
         notify_change(model)
     } else {
         Vec::new()
@@ -585,6 +623,32 @@ pub(super) fn linter_diagnostics(
         model.diagnostics.insert(path, diags);
     }
     Vec::new()
+}
+
+/// Removes a server and clears its languages' diagnostics.
+pub(super) fn remove_server(model: &mut Model, language: &str) -> Vec<Cmd> {
+    // A format request to this server will never be answered now.
+    let cmds = abandon_format(model);
+    model.lsp.sessions.remove(language);
+    model.lsp.starting.remove(language);
+    model.lsp.initialized.remove(language);
+    // Drop diagnostics for files of this language.
+    let paths: Vec<std::path::PathBuf> = model
+        .diagnostics
+        .keys()
+        .filter(|p| {
+            model
+                .extensions
+                .language_for_path(p)
+                .map(|l| l.id == language)
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+    for p in paths {
+        model.diagnostics.remove(&p);
+    }
+    cmds
 }
 
 #[cfg(test)]
@@ -674,28 +738,5 @@ mod tests {
         let mut b = Buffer::new(None, "a😀b");
         apply_text_edits(&mut b, &[edit(0, 1, 0, 3, "X")]);
         assert_eq!(b.full_text(), "aXb");
-    }
-}
-
-/// Removes a server and clears its languages' diagnostics.
-pub(super) fn remove_server(model: &mut Model, language: &str) {
-    model.lsp.sessions.remove(language);
-    model.lsp.starting.remove(language);
-    model.lsp.initialized.remove(language);
-    // Drop diagnostics for files of this language.
-    let paths: Vec<std::path::PathBuf> = model
-        .diagnostics
-        .keys()
-        .filter(|p| {
-            model
-                .extensions
-                .language_for_path(p)
-                .map(|l| l.id == language)
-                .unwrap_or(false)
-        })
-        .cloned()
-        .collect();
-    for p in paths {
-        model.diagnostics.remove(&p);
     }
 }

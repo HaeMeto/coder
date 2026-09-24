@@ -1,4 +1,4 @@
-//! Embedded terminal sizing.
+//! Embedded terminal: sizing, paste, and the PTY session lifecycle / output.
 
 use super::*;
 
@@ -26,4 +26,43 @@ pub(super) fn sync_terminal_size(model: &mut Model) {
     let rows = a.terminal.height.saturating_sub(1).max(1);
     let cols = a.terminal.width.saturating_sub(1).max(1);
     model.terminal.resize(rows, cols);
+}
+
+/// The PTY session is ready (`Msg::PtyReady`).
+pub(super) fn pty_ready(model: &mut Model, session: crate::services::pty::PtySession) -> Vec<Cmd> {
+    model.terminal.session = Some(session);
+    model.terminal.spawn_requested = false;
+    // Output may have been announced (and buffered) before the session arrived.
+    drain_pty_output(model);
+    sync_terminal_size(model);
+    Vec::new()
+}
+
+/// New PTY output is buffered in the session (`Msg::PtyOutput` is only a
+/// wake-up): drain it into vt100.
+pub(super) fn pty_output(model: &mut Model) -> Vec<Cmd> {
+    drain_pty_output(model);
+    Vec::new()
+}
+
+/// The shell exited (`Msg::PtyExited`).
+pub(super) fn pty_exited(model: &mut Model) -> Vec<Cmd> {
+    model.terminal.session = None;
+    model.terminal.spawn_requested = false;
+    model.notify("Terminal closed".to_string());
+    Vec::new()
+}
+
+/// Feeds everything the PTY buffered since the last drain to the vt100 parser.
+fn drain_pty_output(model: &mut Model) {
+    let bytes = model
+        .terminal
+        .session
+        .as_ref()
+        .map(|s| s.take_output())
+        .unwrap_or_default();
+    model.terminal.parser.process(&bytes);
+    // Refresh scrollback bounds and re-anchor the view after vt100 has
+    // appended any new rows.
+    model.terminal.sync_scroll_bounds();
 }

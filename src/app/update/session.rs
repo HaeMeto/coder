@@ -146,6 +146,33 @@ fn restore_file(model: &mut Model, entry: TabEntry, active: Option<&str>) -> Vec
     vec![Cmd::ReadFile(path)]
 }
 
+/// A session checkpoint write finished (`Msg::SessionSaved`).
+pub(super) fn session_saved(
+    model: &mut Model,
+    outcome: crate::services::session::SaveOutcome,
+) -> Vec<Cmd> {
+    use crate::services::session::SaveOutcome;
+    match outcome {
+        SaveOutcome::Saved(new_gen) => {
+            model.session_seen_generation = Some(new_gen);
+            Vec::new()
+        }
+        SaveOutcome::Conflict(disk_gen) => {
+            // Another coder instance wrote a newer checkpoint since we last
+            // checked: adopt its generation as our new baseline (so we don't
+            // re-report the same conflict every checkpoint) and skip this
+            // write rather than clobber it — see `services::session::save`'s
+            // multi-instance note.
+            model.session_seen_generation = Some(disk_gen);
+            model.notify(
+                "Session updated by another coder window; this checkpoint was skipped".to_string(),
+            );
+            Vec::new()
+        }
+        SaveOutcome::NoPath => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -428,6 +428,24 @@ fn scrollbar_jump(model: &mut Model, a: &ui::Areas, y: u16) {
         return;
     }
     let row = y.saturating_sub(a.scrollbar.y) as usize;
+    // A diff tab with woven deletions draws its track over *display* rows
+    // (see `ui::editor::render_scrollbar`): map through them so the click lands
+    // where the thumb is drawn, then snap to the first real line at/after it.
+    if model.has_inline_deletions() {
+        let rows = model.diff_rows();
+        let n = rows.len().max(1);
+        let target = (row * n / h).saturating_sub(h / 2).min(n.saturating_sub(h));
+        let line = rows[target.min(rows.len().saturating_sub(1))..]
+            .iter()
+            .find_map(|r| match r {
+                crate::app::model::DiffRow::Real(l) => Some(*l),
+                crate::app::model::DiffRow::Deleted(_) => None,
+            });
+        if let (Some(line), Some(buf)) = (line, model.active_buffer_mut()) {
+            buf.scroll_y = line;
+        }
+        return;
+    }
     if let Some(buf) = model.active_buffer_mut() {
         let n = buf.line_count().max(1);
         let target = row * n / h;

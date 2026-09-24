@@ -104,6 +104,12 @@ pub enum Cmd {
         text: String,
     },
     SetClipboard(String),
+    /// Read the system clipboard off the UI thread (arboard's X11 read can block
+    /// waiting on the selection owner) -> `Msg::ClipboardRead`. `fallback` (the
+    /// internal clipboard) is used when the system one is empty/unavailable.
+    ReadClipboard {
+        fallback: String,
+    },
     /// Probe whether each named binary is installed on PATH (result ->
     /// `Msg::ToolsChecked`), for the Extensions panel status.
     CheckTools(Vec<String>),
@@ -131,13 +137,47 @@ fn binary_on_path(command: &str) -> bool {
     let Ok(path) = std::env::var("PATH") else {
         return false;
     };
-    path.split(':')
-        .any(|dir| std::path::Path::new(dir).join(command).is_file())
+    std::env::split_paths(&path).any(|dir| dir.join(command).is_file())
 }
 
+/// A pending file write for the single writer task.
+type WriteJob = (PathBuf, String, UnboundedSender<Msg>);
+
+/// Queues a file write. Every save goes through one long-lived writer task, so
+/// two quick saves of the same file land on disk in the order they were issued
+/// (independent `tokio::spawn`s could finish in either order, leaving the older
+/// text on disk). Replies with `Msg::FileSaved` carrying the written text.
+fn queue_write(path: PathBuf, contents: String, tx: UnboundedSender<Msg>) {
+    static WRITER: std::sync::OnceLock<UnboundedSender<WriteJob>> = std::sync::OnceLock::new();
+    let writer = WRITER.get_or_init(|| {
+        let (jobs_tx, mut jobs) = tokio::sync::mpsc::unbounded_channel::<WriteJob>();
+        tokio::spawn(async move {
+            while let Some((path, contents, tx)) = jobs.recv().await {
+                match services::fs::write_file(&path, &contents).await {
+                    Ok(()) => {
+                        let _ = tx.send(Msg::FileSaved { path, contents });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Msg::Error(format!("could not save: {e}")));
+                    }
+                }
+            }
+        });
+        jobs_tx
+    });
+    let _ = writer.send((path, contents, tx));
+}
+
+/// Longest a formatter/linter may run before it is killed.
+const TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// Runs a stdin->stdout tool: feeds `input` on stdin, returns its output.
+///
+/// stdin is written and stdout/stderr drained on their own threads, so a tool
+/// that streams output while still reading can never fill a pipe and deadlock
+/// against us; a hung tool is killed after `TOOL_TIMEOUT`.
 fn run_tool(spec: &ToolSpec, input: &str) -> std::io::Result<std::process::Output> {
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::process::{Command, Stdio};
     let mut child = Command::new(&spec.command)
         .args(&spec.args)
@@ -145,17 +185,56 @@ fn run_tool(spec: &ToolSpec, input: &str) -> std::io::Result<std::process::Outpu
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(input.as_bytes())?;
-        // stdin drops here, closing the pipe so the tool sees EOF.
+    let writer = child.stdin.take().map(|mut stdin| {
+        let input = input.as_bytes().to_vec();
+        // stdin drops at the end of the thread, closing the pipe so the tool sees EOF.
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&input);
+        })
+    });
+    fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut out = Vec::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_end(&mut out);
+            }
+            out
+        })
     }
-    child.wait_with_output()
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+
+    let deadline = std::time::Instant::now() + TOOL_TIMEOUT;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("{} timed out", spec.command),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    if let Some(w) = writer {
+        let _ = w.join();
+    }
+    Ok(std::process::Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
 }
 
 /// Parses common `path:line:col: message` linter output into `(line0, col0, msg)`.
 fn parse_linter_output(text: &str) -> Vec<(usize, usize, String)> {
     // Matches the first `line:col` pair on a line, with an optional message tail.
-    let re = regex::Regex::new(r"(\d+):(\d+):?\s*(.*)").unwrap();
+    static RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(\d+):(\d+):?\s*(.*)").unwrap());
+    let re = &*RE;
     text.lines()
         .filter_map(|line| {
             let caps = re.captures(line)?;
@@ -170,42 +249,6 @@ fn parse_linter_output(text: &str) -> Vec<(usize, usize, String)> {
             Some((ln.saturating_sub(1), col.saturating_sub(1), msg))
         })
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_linter_output;
-
-    #[test]
-    fn run_tool_pipes_stdin_to_stdout() {
-        use crate::services::extensions::ToolSpec;
-        // `tr a-z A-Z` uppercases stdin — a deterministic stand-in for a formatter.
-        if std::process::Command::new("tr")
-            .arg("--version")
-            .output()
-            .is_err()
-        {
-            return;
-        }
-        let spec = ToolSpec {
-            command: "tr".to_string(),
-            args: vec!["a-z".to_string(), "A-Z".to_string()],
-        };
-        let out = super::run_tool(&spec, "hello").unwrap();
-        assert!(out.status.success());
-        assert_eq!(String::from_utf8_lossy(&out.stdout), "HELLO");
-    }
-
-    #[test]
-    fn parses_ruff_style_output() {
-        let out =
-            "app.py:3:5: F401 unused import\napp.py:10:1: E302 expected 2 blank lines\nnoise line";
-        let items = parse_linter_output(out);
-        assert_eq!(items.len(), 2);
-        // 1-based input -> 0-based storage.
-        assert_eq!(items[0], (2, 4, "F401 unused import".to_string()));
-        assert_eq!(items[1].0, 9);
-    }
 }
 
 /// The first non-empty line of a message, for the one-line status bar.
@@ -234,19 +277,44 @@ fn rescan_parent(path: &std::path::Path, tx: &UnboundedSender<Msg>) {
 }
 
 /// Loads the git status and sends `Msg::GitStatusLoaded`.
+///
+/// Loads are coalesced: while one runs, further requests only flag a rerun, so
+/// a burst of saves / disk events costs at most one extra `git status`. Since
+/// one thread at a time loads and sends, results also arrive in order — an
+/// older status can never overwrite a newer one.
 fn send_git_status(root: &std::path::Path, tx: &UnboundedSender<Msg>) {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    static RERUN: AtomicBool = AtomicBool::new(false);
+    // The newest request's root and channel (the workspace root can change).
+    static LATEST: Mutex<Option<(PathBuf, UnboundedSender<Msg>)>> = Mutex::new(None);
+
+    if let Ok(mut latest) = LATEST.lock() {
+        *latest = Some((root.to_path_buf(), tx.clone()));
+    }
+    RERUN.store(true, SeqCst);
+    if RUNNING.swap(true, SeqCst) {
+        return; // the running loader will see RERUN and go again
+    }
+    loop {
+        RERUN.store(false, SeqCst);
+        let job = LATEST.lock().ok().and_then(|l| l.clone());
+        if let Some((root, tx)) = job {
+            load_and_send_git_status(&root, &tx);
+        }
+        RUNNING.store(false, SeqCst);
+        // A request that raced the store above either restarted us here, or
+        // won `RUNNING` itself and runs its own loop.
+        if !RERUN.load(SeqCst) || RUNNING.swap(true, SeqCst) {
+            break;
+        }
+    }
+}
+
+fn load_and_send_git_status(root: &std::path::Path, tx: &UnboundedSender<Msg>) {
     let status = services::git::load_status(root);
-    let _ = tx.send(Msg::GitStatusLoaded {
-        branch: status.branch,
-        staged: status.staged,
-        unstaged: status.unstaged,
-        is_repo: status.is_repo,
-        ahead: status.ahead,
-        behind: status.behind,
-        has_upstream: status.has_upstream,
-        has_remote: status.has_remote,
-        history: status.history,
-    });
+    let _ = tx.send(Msg::GitStatusLoaded(status));
 }
 
 /// Runs a Cmd; results come back as Msg over `tx`.
@@ -341,16 +409,7 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
             });
         }
         Cmd::WriteFile { path, contents } => {
-            tokio::spawn(async move {
-                match services::fs::write_file(&path, &contents).await {
-                    Ok(()) => {
-                        let _ = tx.send(Msg::FileSaved { path });
-                    }
-                    Err(e) => {
-                        let _ = tx.send(Msg::Error(format!("could not save: {e}")));
-                    }
-                }
-            });
+            queue_write(path, contents, tx);
         }
         Cmd::LoadHeadText(path) => {
             tokio::task::spawn_blocking(move || {
@@ -417,7 +476,7 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
             tokio::task::spawn_blocking(move || {
                 match services::git::commit(&root, &message) {
                     Ok(()) => {
-                        let _ = tx.send(Msg::Toast("Committed".to_string()));
+                        let _ = tx.send(Msg::GitCommitted);
                     }
                     Err(e) => {
                         let _ = tx.send(Msg::Error(format!("commit failed: {e}")));
@@ -588,8 +647,7 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
                     let _ = tx.send(Msg::Toast(format!("formatter failed: {detail}")));
                     // Don't lose the user's save: write the original text.
                     if save_after {
-                        let _ = std::fs::write(&path, &text);
-                        let _ = tx.send(Msg::FileSaved { path });
+                        queue_write(path, text, tx);
                     }
                 }
             });
@@ -605,6 +663,13 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
                     let items = parse_linter_output(&combined);
                     let _ = tx.send(Msg::LinterDiagnostics { path, items });
                 }
+            });
+        }
+        Cmd::ReadClipboard { fallback } => {
+            tokio::task::spawn_blocking(move || {
+                let text = services::clipboard::get_text();
+                let text = if text.is_empty() { fallback } else { text };
+                let _ = tx.send(Msg::ClipboardRead(text));
             });
         }
         Cmd::SetClipboard(text) => {
@@ -635,8 +700,22 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
             });
         }
         Cmd::SaveConfig(config) => {
-            tokio::task::spawn_blocking(move || {
-                services::config::save(&config);
+            // Arrowing through the Themes panel saves on every step. Writers are
+            // serialized and each writes the *newest* pending config, so a
+            // burst collapses to a write or two and the last change always
+            // lands last (independent tasks could finish in any order).
+            use std::sync::Mutex;
+            static PENDING: Mutex<Option<services::config::Config>> = Mutex::new(None);
+            static WRITE: Mutex<()> = Mutex::new(());
+            if let Ok(mut p) = PENDING.lock() {
+                *p = Some(config);
+            }
+            tokio::task::spawn_blocking(|| {
+                let _serial = WRITE.lock();
+                let latest = PENDING.lock().ok().and_then(|mut p| p.take());
+                if let Some(config) = latest {
+                    services::config::save(&config);
+                }
             });
         }
         Cmd::ScheduleToastExpiry => {
@@ -651,5 +730,41 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
                 let _ = tx.send(Msg::SessionSaved(outcome));
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_linter_output;
+
+    #[test]
+    fn run_tool_pipes_stdin_to_stdout() {
+        use crate::services::extensions::ToolSpec;
+        // `tr a-z A-Z` uppercases stdin — a deterministic stand-in for a formatter.
+        if std::process::Command::new("tr")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let spec = ToolSpec {
+            command: "tr".to_string(),
+            args: vec!["a-z".to_string(), "A-Z".to_string()],
+        };
+        let out = super::run_tool(&spec, "hello").unwrap();
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "HELLO");
+    }
+
+    #[test]
+    fn parses_ruff_style_output() {
+        let out =
+            "app.py:3:5: F401 unused import\napp.py:10:1: E302 expected 2 blank lines\nnoise line";
+        let items = parse_linter_output(out);
+        assert_eq!(items.len(), 2);
+        // 1-based input -> 0-based storage.
+        assert_eq!(items[0], (2, 4, "F401 unused import".to_string()));
+        assert_eq!(items[1].0, 9);
     }
 }

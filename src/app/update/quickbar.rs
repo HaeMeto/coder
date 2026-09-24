@@ -19,7 +19,19 @@ pub(super) fn files_listed(model: &mut Model, mut paths: Vec<PathBuf>) -> Vec<Cm
         return Vec::new();
     };
     paths.sort();
-    qb.files = paths;
+    let root = &model.root;
+    qb.files = paths
+        .into_iter()
+        .map(|path| {
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .into_owned();
+            let key = rel.to_lowercase();
+            crate::app::model::QuickbarFile { path, rel, key }
+        })
+        .collect();
     qb.files_loaded = true;
     rebuild_items(model);
     Vec::new()
@@ -143,7 +155,6 @@ fn rebuild_items(model: &mut Model) {
         return;
     };
     let query = qb.input.content().trim().to_lowercase();
-    let root = model.root.clone();
 
     // Startup template of commands: open folder, new entries, plus the panels.
     let mut commands: Vec<QuickbarItem> = Vec::new();
@@ -154,37 +165,28 @@ fn rebuild_items(model: &mut Model) {
         commands.push(QuickbarItem::Panel(p));
     }
 
-    // Workspace files with their workspace-relative labels.
-    let files: Vec<QuickbarItem> = qb
-        .files
-        .iter()
-        .map(|path| {
-            let rel = path
-                .strip_prefix(&root)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .into_owned();
-            QuickbarItem::File {
-                path: path.clone(),
-                rel,
-            }
-        })
-        .filter(|it| query.is_empty() || it.filter_text().contains(&query))
-        .collect();
+    // Cap the palette to a reasonable viewport so a huge workspace doesn't draw
+    // thousands of rows; the query narrows it down.
+    const MAX: usize = 100;
 
-    // Combine commands then files (files in sorted order come last).
+    // Commands first, then matching files in sorted order. The file scan stops
+    // as soon as the cap is reached, and only matches are cloned.
     let mut items: Vec<QuickbarItem> = commands
         .into_iter()
         .filter(|it| query.is_empty() || it.filter_text().contains(&query))
         .collect();
-    items.extend(files);
-
-    // Cap the palette to a reasonable viewport so a huge workspace doesn't draw
-    // thousands of rows; the query narrows it down.
-    let max = 100;
-    if items.len() > max {
-        items.truncate(max);
-    }
+    let room = MAX.saturating_sub(items.len());
+    items.extend(
+        qb.files
+            .iter()
+            .filter(|f| query.is_empty() || f.key.contains(&query))
+            .take(room)
+            .map(|f| QuickbarItem::File {
+                path: f.path.clone(),
+                rel: f.rel.clone(),
+            }),
+    );
+    items.truncate(MAX);
 
     qb.selected = qb.selected.min(items.len().saturating_sub(1));
     qb.items = items;

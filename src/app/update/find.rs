@@ -36,11 +36,7 @@ pub(super) fn close_find(model: &mut Model) {
 /// Recomputes match positions for the current query and selects the match at or
 /// after the cursor. Called whenever the query or the buffer changes.
 pub(super) fn recompute_find(model: &mut Model) {
-    let matches = model
-        .active_buffer()
-        .map(|b| find_matches(&b.full_text(), model.find.query.content()))
-        .unwrap_or_default();
-    model.find.matches = matches;
+    compute_matches(model);
     if model.find.matches.is_empty() {
         model.find.current = None;
         if let Some(buf) = model.active_buffer_mut() {
@@ -60,6 +56,56 @@ pub(super) fn recompute_find(model: &mut Model) {
         .unwrap_or(0);
     model.find.current = Some(idx);
     find_select_current(model);
+}
+
+/// Recomputes `find.matches` for the active buffer and records which
+/// tab/version they belong to.
+fn compute_matches(model: &mut Model) {
+    let key = active_find_key(model);
+    let matches = model
+        .active_buffer()
+        .map(|b| find_matches(&b.full_text(), model.find.query.content()))
+        .unwrap_or_default();
+    model.find.matches = matches;
+    model.find.matches_key = key;
+}
+
+fn active_find_key(model: &Model) -> Option<(usize, u64)> {
+    let t = model.tabs.get(model.active_tab?)?;
+    Some((t.id, t.buffer.version))
+}
+
+/// Keeps the open find widget's matches in step with the active buffer after
+/// any message: a tab switch, reload, format or cut leaves char ranges that
+/// belong to other text (Replace would then edit arbitrary text). Recomputes
+/// quietly — the current match is re-picked but the cursor is not moved.
+pub(super) fn sync_find(model: &mut Model) {
+    if model.find.matches_key == active_find_key(model) {
+        return;
+    }
+    if !model.find.open {
+        model.find.matches.clear();
+        model.find.current = None;
+        model.find.matches_key = None;
+        return;
+    }
+    compute_matches(model);
+    let cur = model
+        .active_buffer()
+        .map(|b| b.cursor_char_index())
+        .unwrap_or(0);
+    model.find.current = if model.find.matches.is_empty() {
+        None
+    } else {
+        Some(
+            model
+                .find
+                .matches
+                .iter()
+                .position(|(s, _)| *s >= cur)
+                .unwrap_or(0),
+        )
+    };
 }
 
 /// Selects the current match in the buffer and scrolls it into view.
@@ -142,24 +188,28 @@ fn find_matches(text: &str, query: &str) -> Vec<(usize, usize)> {
     if query.is_empty() {
         return Vec::new();
     }
-    let t: Vec<char> = text.chars().collect();
-    let q: Vec<char> = query.chars().collect();
-    let (tl, ql) = (t.len(), q.len());
-    let mut out = Vec::new();
-    if ql == 0 || ql > tl {
-        return out;
-    }
-    let ci_eq = |a: char, b: char| a.eq_ignore_ascii_case(&b);
-    let mut i = 0;
-    while i + ql <= tl {
-        if (0..ql).all(|k| ci_eq(t[i + k], q[k])) {
-            out.push((i, i + ql));
-            i += ql;
-        } else {
-            i += 1;
-        }
-    }
-    out
+    // An escaped literal with ASCII-only case folding (`unicode(false)`): the
+    // regex engine's substring search is linear, unlike a naive per-char scan,
+    // and needs no `Vec<char>` copy of the whole file.
+    let Ok(re) = regex::RegexBuilder::new(&regex::escape(query))
+        .case_insensitive(true)
+        .unicode(false)
+        .build()
+    else {
+        return Vec::new();
+    };
+    let q_chars = query.chars().count();
+    // Byte offsets -> char indices, counted incrementally between matches.
+    let (mut byte, mut chars) = (0, 0);
+    re.find_iter(text)
+        .map(|m| {
+            chars += text[byte..m.start()].chars().count();
+            byte = m.end();
+            let start = chars;
+            chars += q_chars;
+            (start, start + q_chars)
+        })
+        .collect()
 }
 
 /// Builds a new string with every match of `query` replaced by `rep`.
@@ -190,6 +240,15 @@ mod find_tests {
         assert_eq!(find_matches("aaaa", "aa"), vec![(0, 2), (2, 4)]);
         assert!(find_matches("abc", "").is_empty());
         assert!(find_matches("abc", "abcd").is_empty());
+    }
+
+    #[test]
+    fn matches_count_chars_not_bytes() {
+        // Multi-byte text before/inside the match: indices are char offsets.
+        assert_eq!(find_matches("çé X é", "é"), vec![(1, 2), (5, 6)]);
+        assert_eq!(find_matches("😀ab😀AB", "ab"), vec![(1, 3), (4, 6)]);
+        // Case folding is ASCII-only, like before.
+        assert_eq!(find_matches("É é", "é"), vec![(2, 3)]);
     }
 
     #[test]

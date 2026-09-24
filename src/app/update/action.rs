@@ -86,7 +86,7 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
                     "Save As".to_string(),
                     "Path (relative to the workspace root, or absolute):".to_string(),
                     String::new(),
-                    DialogAction::SaveAs(i),
+                    DialogAction::SaveAs(model.tabs[i].id),
                 ));
                 return Vec::new();
             };
@@ -197,23 +197,26 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         // Cut deletes, so on a read-only tab it degrades to a plain copy.
         Action::Cut if model.active_read_only() => apply_action(model, Action::Copy),
         Action::Cut => {
-            if let Some(buf) = model.active_buffer_mut()
-                && let Some(sel) = buf.selected_text()
-            {
-                buf.delete_selection();
-                model.internal_clipboard = sel.clone();
-                ensure_cursor_visible(model);
-                let mut cmds = vec![Cmd::SetClipboard(sel)];
-                cmds.extend(super::lsp::notify_change(model));
-                cmds.push(model.show_toast("Cut to clipboard"));
-                return cmds;
+            let Some(sel) = model.active_buffer().and_then(|b| b.selected_text()) else {
+                return Vec::new();
+            };
+            // Through `mutate`, like any edit: focus/notice checks, session
+            // checkpoint, find refresh and the LSP `didChange` all apply.
+            let before = model.active_buffer().map(|b| b.version);
+            let mut cmds = mutate(model, |b| {
+                b.delete_selection();
+            });
+            if before == model.active_buffer().map(|b| b.version) {
+                return cmds; // refused (not focused / notice tab)
             }
-            Vec::new()
+            model.internal_clipboard = sel.clone();
+            cmds.push(Cmd::SetClipboard(sel));
+            cmds.push(model.show_toast("Cut to clipboard"));
+            cmds
         }
-        Action::Paste => {
-            let text = read_clipboard(model);
-            paste_into_editor(model, &text)
-        }
+        Action::Paste => vec![Cmd::ReadClipboard {
+            fallback: model.internal_clipboard.clone(),
+        }],
 
         // ----- Sidebar navigation -----
         // In the Git panel the arrows drive the change list, so they stay put

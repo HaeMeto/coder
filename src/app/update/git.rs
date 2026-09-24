@@ -4,7 +4,8 @@ use super::*;
 
 use crate::app::model::GitZone;
 
-/// Validates the commit message and returns a commit Cmd (optimistically clears the message).
+/// Validates the commit message and returns a commit Cmd. The message is cleared
+/// only once the commit succeeds (`Msg::GitCommitted`).
 pub(super) fn git_commit(model: &mut Model) -> Vec<Cmd> {
     let g = &mut model.sidebar.git;
     let msg = g.commit.content().trim().to_string();
@@ -16,7 +17,6 @@ pub(super) fn git_commit(model: &mut Model) -> Vec<Cmd> {
         model.notify("No staged changes".to_string());
         return Vec::new();
     }
-    g.commit.clear();
     model.focus = Focus::Sidebar;
     model.sidebar.git.zone = GitZone::Files;
     vec![Cmd::GitCommit(msg)]
@@ -147,4 +147,111 @@ pub(super) fn git_revert_entry(model: &mut Model) -> Vec<Cmd> {
         DialogAction::GitRevert(rel),
     ));
     Vec::new()
+}
+
+/// The file's HEAD content arrived (`Msg::HeadTextLoaded`).
+pub(super) fn head_text_loaded(model: &mut Model, path: PathBuf, text: Option<String>) -> Vec<Cmd> {
+    // Update every open tab for this file (a normal tab and its diff tab).
+    // Every git status refresh reloads HEAD for all tabs; skip the
+    // (whole-file) re-diff when it didn't actually move. HEAD text only
+    // feeds the change gutter, never syntax colors — no re-highlight.
+    for i in model.all_tabs_for(&path) {
+        if model.tabs[i].head_text != text {
+            model.tabs[i].head_text = text.clone();
+            if model.active_tab == Some(i) {
+                model.mark_git_dirty();
+            }
+        }
+    }
+    // First open of a diff tab: jump the cursor to the first changed line so
+    // the diff is on screen without scrolling.
+    if model.pending_diff_scroll.as_deref() == Some(path.as_path()) {
+        model.pending_diff_scroll = None;
+        model.refresh_git_marks();
+        if let Some(first) = model.active_git_marks.keys().min().copied() {
+            // Leave ~10 lines of context above the first change so it sits
+            // a bit below the top edge rather than flush against it.
+            const DIFF_TOP_MARGIN: usize = 10;
+            if let Some(buf) = model.active_buffer_mut() {
+                buf.goto_line(first);
+                buf.scroll_y = first.saturating_sub(DIFF_TOP_MARGIN);
+                buf.scroll_x = 0;
+            }
+        }
+    }
+    Vec::new()
+}
+
+/// A fresh `git status` arrived (`Msg::GitStatusLoaded`).
+pub(super) fn status_loaded(
+    model: &mut Model,
+    status: crate::services::git::GitStatus,
+) -> Vec<Cmd> {
+    let crate::services::git::GitStatus {
+        branch,
+        staged,
+        unstaged,
+        is_repo,
+        ahead,
+        behind,
+        has_upstream,
+        has_remote,
+        history,
+    } = status;
+    // Close diff-mode tabs for files no longer in the change list (reverted /
+    // committed). Their diff is gone, leaving a stale editor view otherwise.
+    let stale: Vec<usize> = model
+        .tabs
+        .iter()
+        .enumerate()
+        // A commit's diff tab is read-only history, not a live change —
+        // it must survive every status refresh.
+        .filter(|(_, t)| t.diff_mode && !t.read_only)
+        .filter_map(|(i, t)| {
+            let path = t.buffer.path.as_ref()?;
+            let in_list = staged
+                .iter()
+                .chain(unstaged.iter())
+                .any(|e| e.path == path.as_path());
+            if !in_list { Some(i) } else { None }
+        })
+        .collect();
+    let mut cmds: Vec<Cmd> = Vec::new();
+    for i in stale.into_iter().rev() {
+        if model.tabs[i].buffer.dirty {
+            // Never drop unsaved edits: demote it to a normal tab instead.
+            model.tabs[i].diff_mode = false;
+            if model.active_tab == Some(i) {
+                model.mark_git_dirty();
+            }
+        } else {
+            cmds.extend(close_tab(model, i));
+        }
+    }
+    let g = &mut model.sidebar.git;
+    g.branch = branch;
+    g.staged = staged;
+    g.unstaged = unstaged;
+    g.is_repo = is_repo;
+    g.ahead = ahead;
+    g.behind = behind;
+    g.has_upstream = has_upstream;
+    g.has_remote = has_remote;
+    g.history = history;
+    let len = g.nav_len();
+    if g.selected >= len {
+        g.selected = len.saturating_sub(1);
+    }
+    // Refresh the change gutter for open files (HEAD may have moved after a commit/revert).
+    cmds.extend(
+        model
+            .tabs
+            .iter()
+            // Generated tabs (a commit patch) have no file behind their
+            // synthetic path — there is no HEAD text to load.
+            .filter(|t| !t.read_only)
+            .filter_map(|t| t.buffer.path.clone())
+            .map(Cmd::LoadHeadText),
+    );
+    cmds
 }

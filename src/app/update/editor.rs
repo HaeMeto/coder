@@ -122,14 +122,6 @@ pub(super) fn paste_into_editor(model: &mut Model, text: &str) -> Vec<Cmd> {
     cmds
 }
 
-pub(super) fn read_clipboard(model: &Model) -> String {
-    let text = crate::services::clipboard::get_text();
-    if !text.is_empty() {
-        return text;
-    }
-    model.internal_clipboard.clone()
-}
-
 /// Computes the editor viewport size (height, text width).
 pub(super) fn editor_viewport(model: &Model) -> (usize, usize) {
     let area = full_rect(model);

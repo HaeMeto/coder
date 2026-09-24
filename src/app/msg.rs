@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use crossterm::event::{KeyEvent, MouseEvent};
 
 use crate::core::highlight::HlLine;
-use crate::services::git::{CommitDiff, GitCommit, GitEntry};
+use crate::services::git::{CommitDiff, GitStatus};
 use crate::services::lsp::{CompletionItem, LspHandle, RawDiagnostic, RawTextEdit, Token};
 use crate::services::pty::PtySession;
 use crate::services::search::SearchMatch;
@@ -39,6 +39,9 @@ pub enum Msg {
     },
     FileSaved {
         path: PathBuf,
+        /// The text that was written: a tab is marked clean only if it still
+        /// holds exactly this (typing during the async write keeps it dirty).
+        contents: String,
     },
     /// A file/directory was renamed on disk (open tabs under it move too).
     PathRenamed {
@@ -47,17 +50,7 @@ pub enum Msg {
     },
     /// A file/directory was deleted on disk (its open tabs close).
     PathDeleted(PathBuf),
-    GitStatusLoaded {
-        branch: Option<String>,
-        staged: Vec<GitEntry>,
-        unstaged: Vec<GitEntry>,
-        is_repo: bool,
-        ahead: usize,
-        behind: usize,
-        has_upstream: bool,
-        has_remote: bool,
-        history: Vec<GitCommit>,
-    },
+    GitStatusLoaded(GitStatus),
     SearchResults {
         query: String,
         matches: Vec<SearchMatch>,
@@ -72,6 +65,11 @@ pub enum Msg {
         count: usize,
     },
     /// The last commit was undone (soft reset); carries its message to refill the box.
+    /// A commit succeeded: only now is the message box cleared, so a failed
+    /// commit keeps the message for another try.
+    /// The editor paste's clipboard text (see `Cmd::ReadClipboard`).
+    ClipboardRead(String),
+    GitCommitted,
     GitCommitUndone {
         message: String,
     },
@@ -145,7 +143,8 @@ pub enum Msg {
 
     // Terminal
     PtyReady(PtySession),
-    PtyOutput(Vec<u8>),
+    /// Wake-up: new output is buffered in the PTY session (`take_output`).
+    PtyOutput,
     PtyExited,
 
     Error(String),

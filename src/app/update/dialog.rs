@@ -144,16 +144,40 @@ fn dialog_confirm(model: &mut Model) -> Vec<Cmd> {
         DialogAction::NewFolder(dir) => create_in(model, dir, d.input.content(), true),
         DialogAction::Rename(path) => rename_to(model, path, d.input.content()),
         DialogAction::Delete(path) => vec![Cmd::DeletePath(path)],
-        DialogAction::CloseTab(i, _path) => {
+        DialogAction::CloseTab(id, _path) => {
             model.dialog = None;
-            close_tab(model, i)
+            // Resolve by id: async messages may have moved/closed tabs meanwhile.
+            match model.tab_by_id(id) {
+                Some(i) => close_tab(model, i),
+                None => Vec::new(),
+            }
         }
         DialogAction::ResetKeybindings => reset_keybindings(model),
         DialogAction::ResetConfig => reset_config(model),
         DialogAction::OpenWorkspace => {
-            let root = PathBuf::from(d.input.content().trim());
+            let typed = PathBuf::from(d.input.content().trim());
+            let root = if typed.is_absolute() {
+                typed
+            } else {
+                model.root.join(typed)
+            };
+            // Switching drops every tab: never with unsaved edits in them.
+            if model.tabs.iter().any(|t| t.buffer.dirty) {
+                model.notify("Save or close unsaved tabs before opening another folder");
+                return Vec::new();
+            }
+            // One `stat`, justified like `ReplaceDone`'s read: the switch resets
+            // the whole model, so a typo must be rejected before it happens.
+            if !root.is_dir() {
+                model.notify(format!("Not a folder: {}", root.display()));
+                return Vec::new();
+            }
+            let root = root.canonicalize().unwrap_or(root);
             model.open_folder(root.clone());
-            vec![Cmd::ScanDir(root), Cmd::LoadGitStatus]
+            let mut cmds = vec![Cmd::ScanDir(root), Cmd::LoadGitStatus];
+            // Reopen the new workspace's own session, like a fresh launch there.
+            cmds.extend(super::session::restore(model));
+            cmds
         }
         // `selected` is 0 ("Save") or 1 ("Don't Save") — index 2 ("Cancel")
         // never reaches here, `dialog_button` closes the dialog for it directly.

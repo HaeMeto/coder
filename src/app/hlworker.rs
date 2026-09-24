@@ -17,8 +17,8 @@ use crate::core::highlight::Highlighter;
 /// A request to highlight the active buffer down to the viewport bottom. The main
 /// thread emits one whenever the text or the visible range changes.
 pub struct HlJob {
-    /// Which tab and version this text belongs to (echoed back so a stale result
-    /// can be dropped once the buffer has moved on).
+    /// Which tab (`Tab::id`) and version this text belongs to (echoed back so a
+    /// stale result can be dropped once the buffer has moved on).
     pub tab: usize,
     pub version: u64,
     /// The file path (selects the syntax) and the current UI theme name.
@@ -27,8 +27,9 @@ pub struct HlJob {
     /// Drop the worker's cache before highlighting (content replaced: reload /
     /// format / theme change).
     pub reset: bool,
-    /// The full buffer text and the incremental hints from `Buffer::take_dirty`.
-    pub text: String,
+    /// The full buffer text (a cheap shared `Rope` clone) and the incremental
+    /// hints from `Buffer::take_dirty`.
+    pub text: ropey::Rope,
     pub dirty_from: usize,
     pub wide: bool,
     /// First visible line — the base index of the slice sent back (lines above the
@@ -63,7 +64,8 @@ fn worker_loop(job_rx: Receiver<HlJob>, tx: UnboundedSender<Msg>) {
             h.invalidate();
         }
         h.set_theme(&job.theme_name);
-        h.highlight(&job.text, job.version, job.dirty_from, job.wide, job.needed);
+        let text = job.text.to_string();
+        h.highlight(&text, job.version, job.dirty_from, job.wide, job.needed);
 
         // Ship only the visible slice (base = scroll_y); off-screen prefix lines are
         // never rendered, so cloning them across the channel would be waste.
