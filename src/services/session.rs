@@ -7,7 +7,9 @@
 //! its path string, so a `mv`/rename of the folder on the same filesystem does
 //! not lose the session — `rename(2)` never changes the inode. It does *not*
 //! survive a copy, or a move across filesystems (a new inode either way); that
-//! is an accepted, documented limit rather than a bug.
+//! is an accepted, documented limit rather than a bug. On non-Unix targets
+//! (Windows) the key is a hash of the canonical path instead, so there a
+//! rename starts a fresh session too.
 //!
 //! Stored globally at `~/.config/coder/sessions/<dev>-<ino>.toml` (or under
 //! `$CODER_SESSION_DIR`), one file per workspace — never inside the project
@@ -110,10 +112,27 @@ pub struct Hunk {
 /// Stable key for `root`, tolerant of a same-filesystem rename: the directory's
 /// `(dev, ino)`, which `rename(2)` never changes. `None` if `root` can't be
 /// `stat`-ed (already gone).
+#[cfg(unix)]
 pub fn root_key(root: &Path) -> Option<String> {
     use std::os::unix::fs::MetadataExt;
     let meta = std::fs::metadata(root).ok()?;
     Some(format!("{:x}-{:x}", meta.dev(), meta.ino()))
+}
+
+/// Non-Unix fallback (Windows): stable std has no `(dev, ino)` equivalent
+/// (`volume_serial_number`/`file_index` are still unstable), so the key is a
+/// hash of the canonical path. A renamed workspace starts a fresh session.
+#[cfg(not(unix))]
+pub fn root_key(root: &Path) -> Option<String> {
+    let canon = std::fs::canonicalize(root).ok()?;
+    // FNV-1a: unlike `DefaultHasher`, its output is fixed across Rust
+    // releases, so the session file name never changes under a toolchain bump.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in canon.to_string_lossy().to_lowercase().bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    Some(format!("p-{h:016x}"))
 }
 
 /// Base directory for session files: `$CODER_SESSION_DIR`, else alongside
@@ -293,6 +312,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(unix)] // the non-Unix key is path-based, so a rename changes it
     fn root_key_survives_a_same_filesystem_rename() {
         let base = std::env::temp_dir().join(format!("coder-session-test-{}", std::process::id()));
         let original = base.join("orig");
