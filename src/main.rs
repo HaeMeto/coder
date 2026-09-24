@@ -225,16 +225,29 @@ async fn run(
     // comes back to redraw (and check `should_quit`) at least this often.
     const MAX_DRAIN_PER_TICK: usize = 256;
 
+    // An idle loop (no message, no due timer) skips rebuilding the whole view;
+    // everything that changes the screen arrives as a `Msg` (toast expiry, PTY
+    // output, highlight results, ...). A slow heartbeat repaint stays as a
+    // safety net for anything purely time-based.
+    const IDLE_REPAINT: Duration = Duration::from_secs(1);
+    let mut needs_draw = true;
+    let mut last_draw = std::time::Instant::now();
+
     loop {
         // Fire any debounced work whose deadline elapsed (checked every iteration
         // instead of spawning a timer task per keystroke).
         let cmds = update::tick(&mut model);
+        needs_draw |= !cmds.is_empty();
         dispatch(cmds, &model, &tx);
 
-        model.refresh_highlight();
-        model.refresh_git_marks();
-        model.refresh_search_marks();
-        terminal.draw(|f| ui::view(f, &model))?;
+        if needs_draw || last_draw.elapsed() >= IDLE_REPAINT {
+            model.refresh_highlight();
+            model.refresh_git_marks();
+            model.refresh_search_marks();
+            terminal.draw(|f| ui::view(f, &model))?;
+            needs_draw = false;
+            last_draw = std::time::Instant::now();
+        }
         if model.should_quit {
             break;
         }
@@ -243,6 +256,7 @@ async fn run(
         // deadline still fires when no event arrives. On timeout just loop.
         match tokio::time::timeout(TICK, rx.recv()).await {
             Ok(Some(msg)) => {
+                needs_draw = true;
                 handle_msg(&mut model, &mut watcher, &tx, msg);
                 // Drain more already-queued messages before the next render (a
                 // keystroke burst, heavy PTY output, batched async results), but
@@ -277,7 +291,7 @@ fn handle_msg(
     tx: &UnboundedSender<Msg>,
     msg: Msg,
 ) {
-    watch_scanned_dir(watcher, &msg);
+    watch_for(watcher, model, &msg);
     let cmds = update(model, msg);
     dispatch(cmds, model, tx);
 }
@@ -307,13 +321,34 @@ fn spawn_event_forwarder(tx: UnboundedSender<Msg>) {
     });
 }
 
-/// Adds a non-recursive watch on a directory as soon as it is scanned, so changes
-/// in the folders the user actually opened are picked up — without walking the
-/// whole tree up front.
-fn watch_scanned_dir(watcher: &mut Option<notify::RecommendedWatcher>, msg: &Msg) {
+/// Adds non-recursive watches as directories become relevant, so changes in the
+/// folders the user actually opened are picked up — without walking the whole
+/// tree up front:
+/// - a scanned directory (file tree);
+/// - the parent of an opened file (opened via quickbar / search / session
+///   restore, its folder may never have been expanded);
+/// - with the workspace root, `.git` and `.git/refs/heads`, so an external
+///   commit / stage / checkout refreshes the git panel.
+fn watch_for(watcher: &mut Option<notify::RecommendedWatcher>, model: &Model, msg: &Msg) {
     use notify::{RecursiveMode, Watcher};
-    if let (Some(w), Msg::DirScanned { path, .. }) = (watcher.as_mut(), msg) {
-        let _ = w.watch(path, RecursiveMode::NonRecursive);
+    let Some(w) = watcher.as_mut() else {
+        return;
+    };
+    match msg {
+        Msg::DirScanned { path, .. } => {
+            let _ = w.watch(path, RecursiveMode::NonRecursive);
+            if *path == model.root {
+                let git = path.join(".git");
+                let _ = w.watch(&git, RecursiveMode::NonRecursive);
+                let _ = w.watch(&git.join("refs").join("heads"), RecursiveMode::NonRecursive);
+            }
+        }
+        Msg::FileLoaded { path, .. } => {
+            if let Some(dir) = path.parent() {
+                let _ = w.watch(dir, RecursiveMode::NonRecursive);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -331,7 +366,14 @@ fn create_watcher(tx: UnboundedSender<Msg>) -> Option<notify::RecommendedWatcher
             )
         {
             for path in event.paths {
-                let _ = tx.send(Msg::DiskChanged(path));
+                // Our own atomic-write temp files (`services::fs::write_atomic`)
+                // come and go on every save: never worth a rescan.
+                let is_temp = path
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().contains(".coder-tmp."));
+                if !is_temp {
+                    let _ = tx.send(Msg::DiskChanged(path));
+                }
             }
         }
     })
