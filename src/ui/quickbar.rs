@@ -10,7 +10,7 @@ use ratatui::widgets::{Block, Clear, Paragraph};
 use crate::app::model::{Model, QuickbarState};
 use crate::ui::text_input::TextInput;
 
-/// Maximum number of list rows drawn (the palette scrolls).
+/// Maximum number of list rows visible at once (the palette scrolls).
 const MAX_ROWS: usize = 12;
 
 /// Top padding before the list inside the popup (border + input row + gap).
@@ -19,7 +19,8 @@ const LIST_OFFSET: u16 = 3;
 /// The centered rectangle for the quickbar.
 pub fn area(term: Rect) -> Rect {
     let width = ((term.width as usize * 2 / 3).max(30)).min(term.width as usize) as u16;
-    let height = (LIST_OFFSET + MAX_ROWS as u16).min(term.height);
+    // Border + input + gap, the list, and the bottom border.
+    let height = (LIST_OFFSET + MAX_ROWS as u16 + 1).min(term.height);
     let x = term.x + term.width.saturating_sub(width) / 2;
     // Slightly above vertical center so it feels like a command palette.
     let y = term.y + (term.height.saturating_sub(height)) / 2 / 2;
@@ -29,6 +30,12 @@ pub fn area(term: Rect) -> Rect {
         width,
         height,
     }
+}
+
+/// How many list rows fit in the popup (between the input and the bottom
+/// border) for this terminal size.
+pub fn visible_rows(term: Rect) -> usize {
+    area(term).height.saturating_sub(LIST_OFFSET + 1) as usize
 }
 
 pub fn render(frame: &mut Frame, model: &Model) {
@@ -66,7 +73,8 @@ pub fn render(frame: &mut Frame, model: &Model) {
     // Filtered list.
     let start = area.y + LIST_OFFSET;
     let mut lines: Vec<Line> = Vec::new();
-    for (i, item) in qb.items.iter().take(MAX_ROWS).enumerate() {
+    let rows = visible_rows(term_rect);
+    for (i, item) in qb.items.iter().enumerate().skip(qb.scroll).take(rows) {
         let selected = i == qb.selected;
         let (fg, bg) = if selected {
             (th.statusbar_fg, th.accent)
@@ -106,7 +114,7 @@ pub fn render(frame: &mut Frame, model: &Model) {
         x: inner_x,
         y: start,
         width: inner_w,
-        height: (lines.len() as u16).min(MAX_ROWS as u16),
+        height: (lines.len() as u16).min(rows as u16),
     };
     frame.render_widget(
         Paragraph::new(lines).style(Style::new().bg(th.bg_alt)),
@@ -114,16 +122,25 @@ pub fn render(frame: &mut Frame, model: &Model) {
     );
 }
 
+/// Whether `(x, y)` lies inside the popup rectangle.
+pub fn contains(term: Rect, x: u16, y: u16) -> bool {
+    let a = area(term);
+    x >= a.x && x < a.x + a.width && y >= a.y && y < a.y + a.height
+}
+
 /// Which list row a click landed on, or `None` if the click hit the border /
 /// input row / outside the popup. Operates purely on the state so it is easy to
 /// unit test.
 pub fn hit_on(qb: &QuickbarState, term: Rect, x: u16, y: u16) -> Option<usize> {
     let area = area(term);
-    let inside = x >= area.x && x < area.x + area.width && y >= area.y && y < area.y + area.height;
-    if !inside || y < area.y + LIST_OFFSET {
+    if !contains(term, x, y) || y < area.y + LIST_OFFSET {
         return None; // outside, border, or the input row
     }
-    let row = (y - area.y - LIST_OFFSET) as usize;
+    let offset = (y - area.y - LIST_OFFSET) as usize;
+    if offset >= visible_rows(term) {
+        return None; // bottom border
+    }
+    let row = qb.scroll + offset;
     qb.items.get(row).map(|_| row)
 }
 
@@ -182,6 +199,22 @@ mod tests {
         // Outside the popup.
         assert_eq!(
             hit_on(&s, TERM, a.x + a.width + 5, a.y + super::LIST_OFFSET),
+            None
+        );
+    }
+
+    #[test]
+    fn clicks_account_for_scroll() {
+        let mut s = qb();
+        s.scroll = 2;
+        let a = area(TERM);
+        assert_eq!(hit_on(&s, TERM, a.x + 1, a.y + super::LIST_OFFSET), Some(2));
+        assert_eq!(
+            hit_on(&s, TERM, a.x + 1, a.y + super::LIST_OFFSET + 1),
+            Some(3)
+        );
+        assert_eq!(
+            hit_on(&s, TERM, a.x + 1, a.y + super::LIST_OFFSET + 2),
             None
         );
     }

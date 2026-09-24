@@ -921,6 +921,9 @@ pub struct QuickbarState {
     pub items: Vec<QuickbarItem>,
     /// Index of the highlighted row within `items`.
     pub selected: usize,
+    /// Index of the first visible row (the list scrolls when `items` outgrows
+    /// the popup).
+    pub scroll: usize,
 }
 
 impl QuickbarState {
@@ -931,7 +934,19 @@ impl QuickbarState {
             files_loaded: false,
             items: Vec::new(),
             selected: 0,
+            scroll: 0,
         }
+    }
+
+    /// Adjusts `scroll` so `selected` stays inside a `rows`-tall viewport.
+    pub fn ensure_visible(&mut self, rows: usize) {
+        let rows = rows.max(1);
+        if self.selected < self.scroll {
+            self.scroll = self.selected;
+        } else if self.selected >= self.scroll + rows {
+            self.scroll = self.selected + 1 - rows;
+        }
+        self.scroll = self.scroll.min(self.items.len().saturating_sub(rows));
     }
 }
 

@@ -43,18 +43,15 @@ pub(super) fn quickbar_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
         // Ctrl+W close tab, panel switches, ...) so quitting / navigating still
         // works while the palette is open — Ctrl+Q must not be swallowed.
         Ignored => match key.code {
-            KeyCode::Up => {
-                let len = qb.items.len();
-                if len > 0 {
-                    qb.selected = qb.selected.saturating_sub(1).min(len - 1);
-                }
-                Vec::new()
+            KeyCode::Up => move_selection(model, -1),
+            KeyCode::Down => move_selection(model, 1),
+            KeyCode::PageUp => {
+                let rows = visible_rows(model) as isize;
+                move_selection(model, -rows)
             }
-            KeyCode::Down => {
-                if !qb.items.is_empty() && qb.selected + 1 < qb.items.len() {
-                    qb.selected += 1;
-                }
-                Vec::new()
+            KeyCode::PageDown => {
+                let rows = visible_rows(model) as isize;
+                move_selection(model, rows)
             }
             KeyCode::Enter => execute_selected(model),
             KeyCode::Esc => {
@@ -66,6 +63,27 @@ pub(super) fn quickbar_key(model: &mut Model, key: KeyEvent) -> Vec<Cmd> {
             _ => overlay_fallback(model, key),
         },
     }
+}
+
+/// List rows visible in the popup at the current terminal size.
+fn visible_rows(model: &Model) -> usize {
+    crate::ui::quickbar::visible_rows(full_rect(model))
+}
+
+/// Moves the highlight by `delta` rows (clamped to the list) and scrolls so it
+/// stays visible.
+fn move_selection(model: &mut Model, delta: isize) -> Vec<Cmd> {
+    let rows = visible_rows(model);
+    let Some(qb) = model.quickbar.as_mut() else {
+        return Vec::new();
+    };
+    let len = qb.items.len();
+    if len == 0 {
+        return Vec::new();
+    }
+    qb.selected = qb.selected.saturating_add_signed(delta).min(len - 1);
+    qb.ensure_visible(rows);
+    Vec::new()
 }
 
 /// Pastes into the quickbar's query field (single-line: embedded newlines fold
@@ -120,6 +138,7 @@ fn open_folder_dialog(model: &mut Model) -> Vec<Cmd> {
 /// matches the query. The match is a case-insensitive substring of the
 /// relative path.
 fn rebuild_items(model: &mut Model) {
+    let rows = visible_rows(model);
     let Some(qb) = model.quickbar.as_mut() else {
         return;
     };
@@ -169,13 +188,20 @@ fn rebuild_items(model: &mut Model) {
 
     qb.selected = qb.selected.min(items.len().saturating_sub(1));
     qb.items = items;
+    qb.ensure_visible(rows);
 }
 
-/// Handles mouse clicks while the quickbar is open. A click on a list row
-/// runs it; a click anywhere else closes the palette.
+/// Handles mouse input while the quickbar is open. A click on a list row
+/// runs it; a click anywhere else closes the palette. The wheel scrolls the
+/// list.
 pub(super) fn quickbar_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
     if model.quickbar.is_none() {
         return Vec::new();
+    }
+    match m.kind {
+        MouseEventKind::ScrollDown => return scroll_list(model, 3),
+        MouseEventKind::ScrollUp => return scroll_list(model, -3),
+        _ => {}
     }
     if let MouseEventKind::Down(MouseButton::Left) = m.kind {
         let term = full_rect(model);
@@ -189,5 +215,21 @@ pub(super) fn quickbar_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
             model.quickbar = None;
         }
     }
+    Vec::new()
+}
+
+/// Wheel scroll: moves the viewport by `delta` rows and drags the highlight
+/// along so it stays on screen (and Enter runs what is visible).
+fn scroll_list(model: &mut Model, delta: isize) -> Vec<Cmd> {
+    let rows = visible_rows(model).max(1);
+    let Some(qb) = model.quickbar.as_mut() else {
+        return Vec::new();
+    };
+    let max_scroll = qb.items.len().saturating_sub(rows);
+    qb.scroll = qb.scroll.saturating_add_signed(delta).min(max_scroll);
+    qb.selected = qb.selected.clamp(
+        qb.scroll,
+        (qb.scroll + rows - 1).min(qb.items.len().saturating_sub(1)),
+    );
     Vec::new()
 }
