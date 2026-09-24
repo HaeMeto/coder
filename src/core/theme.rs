@@ -59,7 +59,8 @@ impl Theme {
     pub fn tint(&self, c: Color, alpha: f32) -> Color {
         match (self.bg, c) {
             (Color::Rgb(br, bg, bb), Color::Rgb(r, g, b)) => {
-                let mix = |base: u8, top: u8| (base as f32 + (top as f32 - base as f32) * alpha) as u8;
+                let mix =
+                    |base: u8, top: u8| (base as f32 + (top as f32 - base as f32) * alpha) as u8;
                 Color::Rgb(mix(br, r), mix(bg, g), mix(bb, b))
             }
             _ => c,

@@ -122,7 +122,11 @@ fn session_dir() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("CODER_SESSION_DIR") {
         return Some(PathBuf::from(p));
     }
-    Some(crate::services::config::config_path()?.parent()?.join("sessions"))
+    Some(
+        crate::services::config::config_path()?
+            .parent()?
+            .join("sessions"),
+    )
 }
 
 fn session_path(root: &Path) -> Option<PathBuf> {
@@ -197,7 +201,9 @@ pub fn save(root: &Path, snapshot: &mut SessionSnapshot, seen: u64) -> SaveOutco
 pub fn diff_hunks(old: &str, new: &str) -> Option<Vec<Hunk>> {
     let mut opts = git2::DiffOptions::new();
     opts.context_lines(0);
-    let patch = git2::Patch::from_buffers(old.as_bytes(), None, new.as_bytes(), None, Some(&mut opts)).ok()?;
+    let patch =
+        git2::Patch::from_buffers(old.as_bytes(), None, new.as_bytes(), None, Some(&mut opts))
+            .ok()?;
     let new_lines = split_lines_keep(new);
     let mut hunks = Vec::new();
     for h in 0..patch.num_hunks() {
@@ -219,7 +225,11 @@ pub fn diff_hunks(old: &str, new: &str) -> Option<Vec<Hunk>> {
             .get(new_start..new_start + new_count)
             .map(|s| s.concat())
             .unwrap_or_default();
-        hunks.push(Hunk { old_start, old_lines, new_text: text });
+        hunks.push(Hunk {
+            old_start,
+            old_lines,
+            new_text: text,
+        });
     }
     Some(hunks)
 }
@@ -291,7 +301,10 @@ mod tests {
         let renamed = base.join("renamed");
         std::fs::rename(&original, &renamed).unwrap();
         let key_after = root_key(&renamed).unwrap();
-        assert_eq!(key_before, key_after, "renaming the folder must keep the same key");
+        assert_eq!(
+            key_before, key_after,
+            "renaming the folder must keep the same key"
+        );
         std::fs::remove_dir_all(&base).unwrap();
     }
 
@@ -352,7 +365,9 @@ mod tests {
                 scroll_y: 0,
                 scroll_x: 0,
                 dirty: true,
-                content: Some(Content::Full { text: "fn main() {}\n".into() }),
+                content: Some(Content::Full {
+                    text: "fn main() {}\n".into(),
+                }),
             }],
         };
         match save(&root, &mut snap, 0) {
@@ -371,7 +386,8 @@ mod tests {
     #[test]
     fn a_stale_generation_is_reported_as_a_conflict_not_overwritten() {
         let _guard = super::TEST_ENV_LOCK.lock().unwrap();
-        let dir = std::env::temp_dir().join(format!("coder-session-conflict-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("coder-session-conflict-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         unsafe {
@@ -389,7 +405,10 @@ mod tests {
             tabs: Vec::new(),
         };
         // Instance A writes first: generation 0 -> 1.
-        assert!(matches!(save(&root, &mut snap.clone(), 0), SaveOutcome::Saved(1)));
+        assert!(matches!(
+            save(&root, &mut snap.clone(), 0),
+            SaveOutcome::Saved(1)
+        ));
         // Instance B still thinks the generation is 0 (stale) -> conflict, not clobbered.
         match save(&root, &mut snap, 0) {
             SaveOutcome::Conflict(g) => assert_eq!(g, 1),

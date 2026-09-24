@@ -257,7 +257,11 @@ mod tests {
         // contain the tail, not the head.
         let rows = render(&s, true, 0, 5, 1);
         assert!(rows[0].contains('p'), "tail not visible: {:?}", rows[0]);
-        assert!(!rows[0].contains('a'), "head should have scrolled off: {:?}", rows[0]);
+        assert!(
+            !rows[0].contains('a'),
+            "head should have scrolled off: {:?}",
+            rows[0]
+        );
     }
 
     #[test]
@@ -276,7 +280,15 @@ mod tests {
         s.set_content("l1\nl2\nl3\nl4"); // caret at end (on l4)
         // Height 2: must scroll so l4 (caret row) is visible.
         let rows = render(&s, true, 0, 8, 2);
-        assert!(rows.iter().any(|r| r.contains("l4")), "caret row hidden: {:?}", rows);
-        assert!(!rows.iter().any(|r| r.contains("l1")), "should have scrolled past l1: {:?}", rows);
+        assert!(
+            rows.iter().any(|r| r.contains("l4")),
+            "caret row hidden: {:?}",
+            rows
+        );
+        assert!(
+            !rows.iter().any(|r| r.contains("l1")),
+            "should have scrolled past l1: {:?}",
+            rows
+        );
     }
 }

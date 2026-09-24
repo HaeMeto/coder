@@ -357,8 +357,7 @@ impl Buffer {
     pub fn move_page(&mut self, delta: isize, extend: bool) {
         self.pre_move(extend);
         let target = (self.cursor.line as isize + delta)
-            .clamp(0, self.line_count().saturating_sub(1) as isize)
-            as usize;
+            .clamp(0, self.line_count().saturating_sub(1) as isize) as usize;
         self.cursor.line = target;
         self.cursor.col = self.cursor.col.min(self.line_len(self.cursor.line));
     }
@@ -551,9 +550,17 @@ impl Buffer {
 
         // Region of physical lines to rewrite, and their new order.
         let (region_start_line, region_end_line, order): (usize, usize, Vec<usize>) = if delta < 0 {
-            (start - 1, end, (start..=end).chain(std::iter::once(start - 1)).collect())
+            (
+                start - 1,
+                end,
+                (start..=end).chain(std::iter::once(start - 1)).collect(),
+            )
         } else {
-            (start, end + 1, std::iter::once(end + 1).chain(start..=end).collect())
+            (
+                start,
+                end + 1,
+                std::iter::once(end + 1).chain(start..=end).collect(),
+            )
         };
 
         let region_start = self.rope.line_to_char(region_start_line);
@@ -602,7 +609,11 @@ impl Buffer {
     /// line — nothing on it is actually selected.
     fn selected_line_span(&self) -> Option<(usize, usize)> {
         let (s, e) = self.selection_range()?;
-        let end = if e.line > s.line && e.col == 0 { e.line - 1 } else { e.line };
+        let end = if e.line > s.line && e.col == 0 {
+            e.line - 1
+        } else {
+            e.line
+        };
         Some((s.line, end))
     }
 
@@ -756,19 +767,20 @@ impl Buffer {
 
         // Merge consecutive typed characters into a single undo step.
         if edit.typing
-            && let Some(last) = self.undo_stack.last_mut() {
-                let contiguous = last.typing
-                    && last.before.is_empty()
-                    && edit.before.is_empty()
-                    && last.char_idx + last.after.chars().count() == edit.char_idx
-                    && edit.stamp.duration_since(last.stamp).as_millis() < 600;
-                if contiguous {
-                    last.after.push_str(&edit.after);
-                    last.cursor_after = edit.cursor_after;
-                    last.stamp = edit.stamp;
-                    return;
-                }
+            && let Some(last) = self.undo_stack.last_mut()
+        {
+            let contiguous = last.typing
+                && last.before.is_empty()
+                && edit.before.is_empty()
+                && last.char_idx + last.after.chars().count() == edit.char_idx
+                && edit.stamp.duration_since(last.stamp).as_millis() < 600;
+            if contiguous {
+                last.after.push_str(&edit.after);
+                last.cursor_after = edit.cursor_after;
+                last.stamp = edit.stamp;
+                return;
             }
+        }
         self.undo_stack.push(edit);
     }
 
@@ -1025,7 +1037,11 @@ mod tests {
         b.insert_newline();
         assert_eq!(b.full_text(), "    ab\n    ");
         b.undo();
-        assert_eq!(b.full_text(), "    ab", "the break and its indent undo together");
+        assert_eq!(
+            b.full_text(),
+            "    ab",
+            "the break and its indent undo together"
+        );
     }
 
     #[test]
@@ -1260,7 +1276,10 @@ mod tests {
         // than land as one giant line.
         let mut b = Buffer::new(None, "");
         b.insert_paste(r#"{"a":1,"b":[2,3]}"#);
-        assert_eq!(b.full_text(), "{\n  \"a\": 1,\n  \"b\": [\n    2,\n    3\n  ]\n}");
+        assert_eq!(
+            b.full_text(),
+            "{\n  \"a\": 1,\n  \"b\": [\n    2,\n    3\n  ]\n}"
+        );
     }
 
     #[test]

@@ -36,7 +36,10 @@ pub(super) fn restore(model: &mut Model) -> Vec<Cmd> {
         super::terminal::sync_terminal_size(model);
         if model.terminal.session.is_none() && !model.terminal.spawn_requested {
             model.terminal.spawn_requested = true;
-            cmds.push(Cmd::SpawnPty { rows: model.terminal.rows, cols: model.terminal.cols });
+            cmds.push(Cmd::SpawnPty {
+                rows: model.terminal.rows,
+                cols: model.terminal.cols,
+            });
         }
     }
     for entry in snap.tabs {
@@ -78,7 +81,13 @@ fn restore_untitled(model: &mut Model, entry: TabEntry, active: Option<&str>) {
     tab.buffer.dirty = entry.dirty;
     tab.untitled_id = Some(id.clone());
     tab.label = entry.label;
-    clamp_and_place(&mut tab.buffer, entry.line, entry.col, entry.scroll_y, entry.scroll_x);
+    clamp_and_place(
+        &mut tab.buffer,
+        entry.line,
+        entry.col,
+        entry.scroll_y,
+        entry.scroll_x,
+    );
     model.tabs.push(tab);
     if active == Some(format!("untitled:{id}").as_str()) {
         model.active_tab = Some(model.tabs.len() - 1);
@@ -99,7 +108,13 @@ fn restore_file(model: &mut Model, entry: TabEntry, active: Option<&str>) -> Vec
     if let Some(Content::Full { text }) = &entry.content {
         let mut tab = Tab::new(Buffer::new(Some(path.clone()), text));
         tab.buffer.dirty = entry.dirty;
-        clamp_and_place(&mut tab.buffer, entry.line, entry.col, entry.scroll_y, entry.scroll_x);
+        clamp_and_place(
+            &mut tab.buffer,
+            entry.line,
+            entry.col,
+            entry.scroll_y,
+            entry.scroll_x,
+        );
         model.tabs.push(tab);
         let idx = model.tabs.len() - 1;
         if is_active {
@@ -135,7 +150,7 @@ fn restore_file(model: &mut Model, entry: TabEntry, active: Option<&str>) -> Vec
 mod tests {
     use super::*;
     use crate::app::msg::Msg;
-    use crate::services::session::{self, Content, SessionSnapshot, TabEntry, TEST_ENV_LOCK};
+    use crate::services::session::{self, Content, SessionSnapshot, TEST_ENV_LOCK, TabEntry};
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("coder-restore-{name}-{}", std::process::id()));
@@ -144,7 +159,11 @@ mod tests {
         dir
     }
 
-    fn snapshot(root: &std::path::Path, tabs: Vec<TabEntry>, active: Option<&str>) -> SessionSnapshot {
+    fn snapshot(
+        root: &std::path::Path,
+        tabs: Vec<TabEntry>,
+        active: Option<&str>,
+    ) -> SessionSnapshot {
         SessionSnapshot {
             root: root.display().to_string(),
             generation: 0,
@@ -157,7 +176,12 @@ mod tests {
         }
     }
 
-    fn file_entry(path: &std::path::Path, dirty: bool, content: Option<Content>, line: usize) -> TabEntry {
+    fn file_entry(
+        path: &std::path::Path,
+        dirty: bool,
+        content: Option<Content>,
+        line: usize,
+    ) -> TabEntry {
         TabEntry {
             kind: "file".into(),
             path: Some(path.display().to_string()),
@@ -183,7 +207,14 @@ mod tests {
         let key = gone.display().to_string();
         let mut snap = snapshot(
             &root,
-            vec![file_entry(&gone, true, Some(Content::Full { text: "hello\nworld\n".into() }), 1)],
+            vec![file_entry(
+                &gone,
+                true,
+                Some(Content::Full {
+                    text: "hello\nworld\n".into(),
+                }),
+                1,
+            )],
             Some(&key),
         );
         session::save(&root, &mut snap, 0);
@@ -224,18 +255,30 @@ mod tests {
         let mut model = Model::new(root.clone());
         let cmds = restore(&mut model);
         assert!(matches!(cmds.as_slice(), [Cmd::ReadFile(p)] if p == &file));
-        assert!(model.tabs.is_empty(), "waits for the async read before creating the tab");
+        assert!(
+            model.tabs.is_empty(),
+            "waits for the async read before creating the tab"
+        );
         assert_eq!(model.session_active_path.as_deref(), Some(file.as_path()));
 
         let text = std::fs::read_to_string(&file).unwrap();
-        update(&mut model, Msg::FileLoaded { path: file.clone(), text });
+        update(
+            &mut model,
+            Msg::FileLoaded {
+                path: file.clone(),
+                text,
+            },
+        );
         assert_eq!(model.tabs.len(), 1);
         assert!(!model.tabs[0].buffer.dirty);
         assert_eq!(model.tabs[0].buffer.cursor.line, 2);
         assert_eq!(model.tabs[0].buffer.cursor.col, 1);
         assert_eq!(model.tabs[0].buffer.scroll_y, 1);
         assert_eq!(model.active_tab, Some(0));
-        assert!(model.session_active_path.is_none(), "cleared once the target tab loaded");
+        assert!(
+            model.session_active_path.is_none(),
+            "cleared once the target tab loaded"
+        );
 
         unsafe {
             std::env::remove_var("CODER_SESSION_DIR");
@@ -255,17 +298,44 @@ mod tests {
         std::fs::write(&a, "a\n").unwrap();
         std::fs::write(&b, "b\n").unwrap();
         let key_b = b.display().to_string();
-        let mut snap = snapshot(&root, vec![file_entry(&a, false, None, 0), file_entry(&b, false, None, 0)], Some(&key_b));
+        let mut snap = snapshot(
+            &root,
+            vec![
+                file_entry(&a, false, None, 0),
+                file_entry(&b, false, None, 0),
+            ],
+            Some(&key_b),
+        );
         session::save(&root, &mut snap, 0);
 
         let mut model = Model::new(root.clone());
         restore(&mut model);
         // "a" happens to finish its async read first...
-        update(&mut model, Msg::FileLoaded { path: a.clone(), text: "a\n".into() });
-        let active_path = |m: &Model| m.active_tab.and_then(|i| m.tabs.get(i)).and_then(|t| t.buffer.path.clone());
-        assert_ne!(active_path(&model).as_deref(), Some(a.as_path()), "must not claim focus for the non-active file");
+        update(
+            &mut model,
+            Msg::FileLoaded {
+                path: a.clone(),
+                text: "a\n".into(),
+            },
+        );
+        let active_path = |m: &Model| {
+            m.active_tab
+                .and_then(|i| m.tabs.get(i))
+                .and_then(|t| t.buffer.path.clone())
+        };
+        assert_ne!(
+            active_path(&model).as_deref(),
+            Some(a.as_path()),
+            "must not claim focus for the non-active file"
+        );
         // ...then "b" (the session's actual active file) arrives.
-        update(&mut model, Msg::FileLoaded { path: b.clone(), text: "b\n".into() });
+        update(
+            &mut model,
+            Msg::FileLoaded {
+                path: b.clone(),
+                text: "b\n".into(),
+            },
+        );
         assert_eq!(active_path(&model).as_deref(), Some(b.as_path()));
 
         unsafe {
@@ -287,12 +357,22 @@ mod tests {
         std::fs::write(&file, base).unwrap();
         let hunks = crate::services::session::diff_hunks(base, edited).unwrap();
         let key = file.display().to_string();
-        let mut snap = snapshot(&root, vec![file_entry(&file, true, Some(Content::Diff { hunks }), 1)], Some(&key));
+        let mut snap = snapshot(
+            &root,
+            vec![file_entry(&file, true, Some(Content::Diff { hunks }), 1)],
+            Some(&key),
+        );
         session::save(&root, &mut snap, 0);
 
         let mut model = Model::new(root.clone());
         restore(&mut model);
-        update(&mut model, Msg::FileLoaded { path: file.clone(), text: base.to_string() });
+        update(
+            &mut model,
+            Msg::FileLoaded {
+                path: file.clone(),
+                text: base.to_string(),
+            },
+        );
         assert_eq!(model.tabs.len(), 1);
         assert!(model.tabs[0].buffer.dirty);
         assert_eq!(model.tabs[0].buffer.full_text(), edited);
@@ -322,7 +402,9 @@ mod tests {
                 scroll_y: 0,
                 scroll_x: 0,
                 dirty: true,
-                content: Some(Content::Full { text: "sketch".into() }),
+                content: Some(Content::Full {
+                    text: "sketch".into(),
+                }),
             }],
             Some("untitled:abc"),
         );
@@ -356,7 +438,10 @@ mod tests {
         session::save(&root, &mut snap, 0);
 
         let mut model = Model::new(root.clone());
-        assert!(!model.layout.terminal_open, "starts closed, like any fresh workspace");
+        assert!(
+            !model.layout.terminal_open,
+            "starts closed, like any fresh workspace"
+        );
         let cmds = restore(&mut model);
         assert!(model.layout.terminal_open);
         assert!(

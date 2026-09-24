@@ -173,10 +173,7 @@ pub fn render(frame: &mut Frame, editor: Rect, model: &Model) {
     // a styled Paragraph only recolors cells, it doesn't blank their symbols,
     // so without Clear the text behind shows through the empty parts.
     frame.render_widget(Clear, l.area);
-    frame.render_widget(
-        Paragraph::new("").style(Style::new().bg(th.bg_alt)),
-        l.area,
-    );
+    frame.render_widget(Paragraph::new("").style(Style::new().bg(th.bg_alt)), l.area);
 
     // --- Find row ---
     let q_focused = focused && model.find.field == FindField::Query;
@@ -193,8 +190,11 @@ pub fn render(frame: &mut Frame, editor: Rect, model: &Model) {
         Style::new().fg(th.fg_dim).bg(th.bg_alt)
     };
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(model.find.count_label(), count_style)))
-            .style(Style::new().bg(th.bg_alt)),
+        Paragraph::new(Line::from(Span::styled(
+            model.find.count_label(),
+            count_style,
+        )))
+        .style(Style::new().bg(th.bg_alt)),
         l.count,
     );
 
@@ -205,7 +205,12 @@ pub fn render(frame: &mut Frame, editor: Rect, model: &Model) {
                 Style::new().fg(th.fg).bg(th.bg_alt),
             )))
             .style(Style::new().bg(th.bg_alt)),
-            Rect { x, y: l.find_y, width: 1, height: 1 },
+            Rect {
+                x,
+                y: l.find_y,
+                width: 1,
+                height: 1,
+            },
         );
     };
     btn(if ascii { "<" } else { "‹" }, l.prev_x);
@@ -231,9 +236,17 @@ pub fn render(frame: &mut Frame, editor: Rect, model: &Model) {
         let (rs, re) = l.replace_btn;
         let (as_, ae) = l.replace_all_btn;
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(" Replace ", Style::new().fg(fg).bg(bg))))
-                .style(Style::new().bg(th.bg_alt)),
-            Rect { x: rs, y: ry, width: re - rs, height: 1 },
+            Paragraph::new(Line::from(Span::styled(
+                " Replace ",
+                Style::new().fg(fg).bg(bg),
+            )))
+            .style(Style::new().bg(th.bg_alt)),
+            Rect {
+                x: rs,
+                y: ry,
+                width: re - rs,
+                height: 1,
+            },
         );
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
@@ -241,7 +254,12 @@ pub fn render(frame: &mut Frame, editor: Rect, model: &Model) {
                 Style::new().fg(fg).bg(bg),
             )))
             .style(Style::new().bg(th.bg_alt)),
-            Rect { x: as_, y: ry, width: ae - as_, height: 1 },
+            Rect {
+                x: as_,
+                y: ry,
+                width: ae - as_,
+                height: 1,
+            },
         );
     }
 }

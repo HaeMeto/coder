@@ -74,8 +74,14 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
     // Title row at the top of the inset area.
     let inner = content_rect(area);
     let title = Paragraph::new(Line::from(Span::styled(
-        format!("{} {} ", model.sidebar.active.icon(), model.sidebar.active.title()),
-        Style::new().fg(model.theme.fg_dim).add_modifier(Modifier::BOLD),
+        format!(
+            "{} {} ",
+            model.sidebar.active.icon(),
+            model.sidebar.active.title()
+        ),
+        Style::new()
+            .fg(model.theme.fg_dim)
+            .add_modifier(Modifier::BOLD),
     )))
     .style(Style::new().bg(model.theme.bg_alt));
     frame.render_widget(title, Rect { height: 1, ..inner });

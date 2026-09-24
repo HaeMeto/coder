@@ -93,9 +93,10 @@ impl FileTree {
                     return Some(n);
                 }
                 if let Some(children) = n.children.as_mut()
-                    && let Some(found) = rec(children, target) {
-                        return Some(found);
-                    }
+                    && let Some(found) = rec(children, target)
+                {
+                    return Some(found);
+                }
             }
             None
         }
@@ -109,9 +110,10 @@ impl FileTree {
                     return Some(n);
                 }
                 if let Some(children) = n.children.as_ref()
-                    && let Some(found) = rec(children, target) {
-                        return Some(found);
-                    }
+                    && let Some(found) = rec(children, target)
+                {
+                    return Some(found);
+                }
             }
             None
         }
@@ -152,10 +154,12 @@ impl FileTree {
                     expanded: n.expanded,
                     depth,
                 });
-                if n.is_dir && n.expanded
-                    && let Some(children) = n.children.as_ref() {
-                        rec(children, depth + 1, rows);
-                    }
+                if n.is_dir
+                    && n.expanded
+                    && let Some(children) = n.children.as_ref()
+                {
+                    rec(children, depth + 1, rows);
+                }
             }
         }
         if let Some(children) = self.children.as_ref() {

@@ -31,7 +31,12 @@ fn dialog_area(d: &Dialog, term: Rect) -> Rect {
     .min(term.height.saturating_sub(2));
     let x = term.x + term.width.saturating_sub(w) / 2;
     let y = term.y + term.height.saturating_sub(h) / 2;
-    Rect { x, y, width: w, height: h }
+    Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    }
 }
 
 /// (confirm label, cancel label) — None if there is no cancel. Not called for
@@ -91,9 +96,24 @@ pub fn layout(d: &Dialog, term: Rect) -> DialogLayout {
         // Don't Save, then Save.
         let (save_l, dont_l, cancel_l) = ask_save_labels();
         let (save_w, dont_w, cancel_w) = (btn_w(save_l), btn_w(dont_l), btn_w(cancel_l));
-        let cancel_rect = Rect { x: right.saturating_sub(cancel_w), y: buttons_y, width: cancel_w, height: 1 };
-        let dont_rect = Rect { x: cancel_rect.x.saturating_sub(1 + dont_w), y: buttons_y, width: dont_w, height: 1 };
-        let save_rect = Rect { x: dont_rect.x.saturating_sub(1 + save_w), y: buttons_y, width: save_w, height: 1 };
+        let cancel_rect = Rect {
+            x: right.saturating_sub(cancel_w),
+            y: buttons_y,
+            width: cancel_w,
+            height: 1,
+        };
+        let dont_rect = Rect {
+            x: cancel_rect.x.saturating_sub(1 + dont_w),
+            y: buttons_y,
+            width: dont_w,
+            height: 1,
+        };
+        let save_rect = Rect {
+            x: dont_rect.x.saturating_sub(1 + save_w),
+            y: buttons_y,
+            width: save_w,
+            height: 1,
+        };
         return DialogLayout {
             area,
             message,

@@ -372,7 +372,9 @@ pub fn gutter_marks(old: &str, new: &str) -> Vec<(usize, GutterKind)> {
     };
     let mut marks: std::collections::HashMap<usize, GutterKind> = std::collections::HashMap::new();
     for h in 0..patch.num_hunks() {
-        let Ok((hunk, _)) = patch.hunk(h) else { continue };
+        let Ok((hunk, _)) = patch.hunk(h) else {
+            continue;
+        };
         let new_start = hunk.new_start() as usize;
         let new_lines = hunk.new_lines() as usize;
         if new_lines > 0 {
@@ -409,7 +411,9 @@ pub fn deleted_blocks(old: &str, new: &str) -> Vec<(Option<usize>, Vec<String>)>
     let old_lines: Vec<&str> = old.lines().collect();
     let mut out = Vec::new();
     for h in 0..patch.num_hunks() {
-        let Ok((hunk, _)) = patch.hunk(h) else { continue };
+        let Ok((hunk, _)) = patch.hunk(h) else {
+            continue;
+        };
         let ol = hunk.old_lines() as usize;
         if ol == 0 {
             continue; // pure addition — nothing removed
@@ -426,7 +430,11 @@ pub fn deleted_blocks(old: &str, new: &str) -> Vec<(Option<usize>, Vec<String>)>
         let anchor = if nl > 0 {
             // Render right before the first new (added/modified) line.
             let first_new0 = ns.saturating_sub(1); // 0-based first new line
-            if first_new0 == 0 { None } else { Some(first_new0 - 1) }
+            if first_new0 == 0 {
+                None
+            } else {
+                Some(first_new0 - 1)
+            }
         } else {
             // Pure deletion: right after the line the removal follows.
             if ns == 0 { None } else { Some(ns - 1) }
@@ -524,7 +532,11 @@ pub fn commit_diff(root: &Path, hash: &str) -> Result<CommitDiff, String> {
     // Who committed it, when, and the message — the header of the view.
     let author = commit.author();
     v.both(
-        &format!("{}  <{}>", author.name().unwrap_or(""), author.email().unwrap_or("")),
+        &format!(
+            "{}  <{}>",
+            author.name().unwrap_or(""),
+            author.email().unwrap_or("")
+        ),
         CommitRow::Author,
     );
     v.both(
@@ -639,12 +651,17 @@ fn file_heading(delta: &git2::DiffDelta, added: usize, removed: usize) -> String
     };
     // Two spaces between the parts, skipping the ones this file has nothing for
     // (a file in the repo root has no directory, an edit has no status word).
-    [name.as_str(), dir.as_str(), what, &format!("+{added} -{removed}")]
-        .iter()
-        .filter(|p| !p.is_empty())
-        .cloned()
-        .collect::<Vec<&str>>()
-        .join("  ")
+    [
+        name.as_str(),
+        dir.as_str(),
+        what,
+        &format!("+{added} -{removed}"),
+    ]
+    .iter()
+    .filter(|p| !p.is_empty())
+    .cloned()
+    .collect::<Vec<&str>>()
+    .join("  ")
 }
 
 /// `git2::Time` as "YYYY-MM-DD HH:MM:SS +ZZZZ" in the commit's own timezone.
@@ -708,8 +725,6 @@ pub fn undo_last_commit(root: &Path) -> Result<String, git2::Error> {
     repo.reset(parent.as_object(), git2::ResetType::Soft, None)?;
     Ok(message)
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -810,7 +825,11 @@ mod tests {
             .map(|(_, l)| l)
             .collect();
         assert!(!headings.is_empty());
-        assert!(headings.iter().all(|h| h.contains(" +") && h.contains(" -")));
+        assert!(
+            headings
+                .iter()
+                .all(|h| h.contains(" +") && h.contains(" -"))
+        );
         // The two sides differ only where the commit actually changed something,
         // which is what paints the green/red backgrounds.
         assert_ne!(d.old, d.new);

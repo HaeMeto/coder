@@ -20,12 +20,12 @@ pub fn scan_dir(dir: &Path) -> Result<Vec<(PathBuf, bool)>> {
     entries.sort_by(|a, b| match (a.1, b.1) {
         (true, false) => std::cmp::Ordering::Less,
         (false, true) => std::cmp::Ordering::Greater,
-        _ => a
-            .0
-            .file_name()
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-            .cmp(&b.0.file_name().unwrap_or_default().to_ascii_lowercase()),
+        _ => {
+            a.0.file_name()
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .cmp(&b.0.file_name().unwrap_or_default().to_ascii_lowercase())
+        }
     });
     Ok(entries)
 }

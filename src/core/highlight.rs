@@ -9,9 +9,7 @@ use syntect::highlighting::{
     Color as SynColor, HighlightIterator, HighlightState, Highlighter as SynHighlighter,
     Style as SynStyle, ThemeSet,
 };
-use syntect::parsing::{
-    ParseState, ScopeStack, SyntaxDefinition, SyntaxReference, SyntaxSet,
-};
+use syntect::parsing::{ParseState, ScopeStack, SyntaxDefinition, SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
 
 use crate::core::theme::Theme;
@@ -21,8 +19,7 @@ static THEME_SET: OnceLock<ThemeSet> = OnceLock::new();
 
 /// Sublime-syntax definitions compiled into the binary for languages syntect
 /// doesn't bundle (e.g. TOML), so highlighting works without external files.
-static EMBEDDED_SYNTAXES: &[&str] =
-    &[include_str!("../../assets/syntaxes/TOML.sublime-syntax")];
+static EMBEDDED_SYNTAXES: &[&str] = &[include_str!("../../assets/syntaxes/TOML.sublime-syntax")];
 
 fn syntax_set() -> &'static SyntaxSet {
     SYNTAX_SET.get_or_init(|| {
@@ -99,14 +96,35 @@ fn theme_dirs() -> Vec<PathBuf> {
 /// understands; the newer `.sublime-color-scheme` JSON is not supported, so
 /// these are sourced from projects that still ship the XML form (bat's set).
 static EMBEDDED_THEMES: &[(&str, &str)] = &[
-    ("Dracula", include_str!("../../assets/themes/Dracula.tmTheme")),
+    (
+        "Dracula",
+        include_str!("../../assets/themes/Dracula.tmTheme"),
+    ),
     ("Nord", include_str!("../../assets/themes/Nord.tmTheme")),
-    ("Monokai Extended", include_str!("../../assets/themes/Monokai Extended.tmTheme")),
-    ("One Dark", include_str!("../../assets/themes/One Dark.tmTheme")),
-    ("Gruvbox Dark", include_str!("../../assets/themes/Gruvbox Dark.tmTheme")),
-    ("Gruvbox Light", include_str!("../../assets/themes/Gruvbox Light.tmTheme")),
-    ("Catppuccin Mocha", include_str!("../../assets/themes/Catppuccin Mocha.tmTheme")),
-    ("Catppuccin Latte", include_str!("../../assets/themes/Catppuccin Latte.tmTheme")),
+    (
+        "Monokai Extended",
+        include_str!("../../assets/themes/Monokai Extended.tmTheme"),
+    ),
+    (
+        "One Dark",
+        include_str!("../../assets/themes/One Dark.tmTheme"),
+    ),
+    (
+        "Gruvbox Dark",
+        include_str!("../../assets/themes/Gruvbox Dark.tmTheme"),
+    ),
+    (
+        "Gruvbox Light",
+        include_str!("../../assets/themes/Gruvbox Light.tmTheme"),
+    ),
+    (
+        "Catppuccin Mocha",
+        include_str!("../../assets/themes/Catppuccin Mocha.tmTheme"),
+    ),
+    (
+        "Catppuccin Latte",
+        include_str!("../../assets/themes/Catppuccin Latte.tmTheme"),
+    ),
 ];
 
 /// Default syntect theme used at application startup.
@@ -510,7 +528,10 @@ mod tests {
         // file must actually parse into a syntect theme, or it must not ship.
         let ts = theme_set();
         for (name, _) in EMBEDDED_THEMES {
-            let theme = ts.themes.get(*name).unwrap_or_else(|| panic!("did not load: {name}"));
+            let theme = ts
+                .themes
+                .get(*name)
+                .unwrap_or_else(|| panic!("did not load: {name}"));
             assert!(theme.settings.background.is_some(), "no background: {name}");
         }
     }
@@ -550,7 +571,9 @@ mod tests {
         let first = inc.highlight(text, 0, usize::MAX, false, 2).to_vec();
         assert_eq!(first.len(), 2, "only the requested lines are cached");
         assert_eq!(&first[..], &want[..2]);
-        let all = inc.highlight(text, 0, usize::MAX, false, usize::MAX).to_vec();
+        let all = inc
+            .highlight(text, 0, usize::MAX, false, usize::MAX)
+            .to_vec();
         assert_eq!(all, want, "resumed highlight equals the full one");
     }
 
@@ -611,8 +634,10 @@ mod tests {
         // A key, a string and a comment should come out as distinct colors, not
         // one flat run of plain-text foreground.
         let lines = hl.highlight("theme = \"dark\" # note\n", 0, 0, false, usize::MAX);
-        let colors: std::collections::HashSet<_> =
-            lines[0].iter().map(|(c, _)| *c).collect();
-        assert!(colors.len() >= 3, "expected varied coloring, got {colors:?}");
+        let colors: std::collections::HashSet<_> = lines[0].iter().map(|(c, _)| *c).collect();
+        assert!(
+            colors.len() >= 3,
+            "expected varied coloring, got {colors:?}"
+        );
     }
 }

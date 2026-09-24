@@ -125,7 +125,12 @@ enum PendingKind {
 }
 
 /// Creates the intent channel, spawns the owner task, and returns the handle.
-pub fn start(language: String, spec: ServerSpec, root: PathBuf, tx: UnboundedSender<Msg>) -> LspHandle {
+pub fn start(
+    language: String,
+    spec: ServerSpec,
+    root: PathBuf,
+    tx: UnboundedSender<Msg>,
+) -> LspHandle {
     let (to_server, from_client) = unbounded_channel::<LspClientMsg>();
     tokio::spawn(run_server(language, spec, root, from_client, tx));
     LspHandle { to_server }
@@ -265,7 +270,11 @@ async fn handle_frame(
         // Server -> client request: reply so the server doesn't block.
         (Some(id), Some(method)) => {
             let result = server_request_reply(method, frame);
-            let _ = write_frame(stdin, &json!({"jsonrpc": "2.0", "id": id, "result": result})).await;
+            let _ = write_frame(
+                stdin,
+                &json!({"jsonrpc": "2.0", "id": id, "result": result}),
+            )
+            .await;
             false
         }
         // Notification.
@@ -347,12 +356,14 @@ async fn send_intent(
             "textDocument/didChange",
             json!({"textDocument": {"uri": uri, "version": version}, "contentChanges": [{"text": text}]}),
         ),
-        LspClientMsg::DidSave { uri } => {
-            notification("textDocument/didSave", json!({"textDocument": {"uri": uri}}))
-        }
-        LspClientMsg::DidClose { uri } => {
-            notification("textDocument/didClose", json!({"textDocument": {"uri": uri}}))
-        }
+        LspClientMsg::DidSave { uri } => notification(
+            "textDocument/didSave",
+            json!({"textDocument": {"uri": uri}}),
+        ),
+        LspClientMsg::DidClose { uri } => notification(
+            "textDocument/didClose",
+            json!({"textDocument": {"uri": uri}}),
+        ),
         LspClientMsg::Completion {
             uri,
             line,

@@ -31,7 +31,13 @@ pub fn render(frame: &mut Frame, area: Rect, gutter_w: u16, model: &Model) {
     let content_w = comp
         .items
         .iter()
-        .map(|it| it.label.chars().count() + it.detail.as_ref().map(|d| d.chars().count() + 2).unwrap_or(0))
+        .map(|it| {
+            it.label.chars().count()
+                + it.detail
+                    .as_ref()
+                    .map(|d| d.chars().count() + 2)
+                    .unwrap_or(0)
+        })
         .max()
         .unwrap_or(0) as u16
         + 2;
@@ -85,5 +91,8 @@ pub fn render(frame: &mut Frame, area: Rect, gutter_w: u16, model: &Model) {
     // Clear first: a row shorter than the popup would otherwise keep the editor
     // text underneath it (Paragraph's style only re-colors, it doesn't blank).
     frame.render_widget(Clear, popup);
-    frame.render_widget(Paragraph::new(lines).style(Style::new().bg(th.bg_alt)), popup);
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::new().bg(th.bg_alt)),
+        popup,
+    );
 }

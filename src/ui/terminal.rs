@@ -33,7 +33,11 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
     // Reserve the rightmost inner column for the scrollbar. The PTY grid width
     // is kept one column narrower (see sync_terminal_size) so nothing is hidden.
     let has_bar = inner.width > 1;
-    let text_w = if has_bar { inner.width - 1 } else { inner.width };
+    let text_w = if has_bar {
+        inner.width - 1
+    } else {
+        inner.width
+    };
 
     let buf = frame.buffer_mut();
 
@@ -41,8 +45,12 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
         for c in 0..text_w.min(cols) {
             let x = inner.x + c;
             let y = inner.y + r;
-            let Some(cell) = screen.cell(r, c) else { continue };
-            let Some(out) = buf.cell_mut((x, y)) else { continue };
+            let Some(cell) = screen.cell(r, c) else {
+                continue;
+            };
+            let Some(out) = buf.cell_mut((x, y)) else {
+                continue;
+            };
             let contents = cell.contents();
             if contents.is_empty() {
                 out.set_char(' ');
@@ -121,11 +129,7 @@ fn render_scrollbar(buf: &mut ratatui::buffer::Buffer, inner: Rect, model: &Mode
 }
 
 /// Returns true if the given visible-grid (row, col) falls within the selection.
-fn selection_contains(
-    selection: &Option<(u16, u16, u16, u16)>,
-    row: u16,
-    col: u16,
-) -> bool {
+fn selection_contains(selection: &Option<(u16, u16, u16, u16)>, row: u16, col: u16) -> bool {
     let Some((r1, c1, r2, c2)) = *selection else {
         return false;
     };

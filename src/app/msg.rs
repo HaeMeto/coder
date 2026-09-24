@@ -63,10 +63,10 @@ pub enum Msg {
         matches: Vec<SearchMatch>,
     },
 
- /// The workspace file listing for the quickbar (from `Cmd::ListFiles`).
- FilesListed {
- paths: Vec<PathBuf>,
- },
+    /// The workspace file listing for the quickbar (from `Cmd::ListFiles`).
+    FilesListed {
+        paths: Vec<PathBuf>,
+    },
     ReplaceDone {
         changed: Vec<PathBuf>,
         count: usize,

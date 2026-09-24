@@ -48,7 +48,10 @@ pub(super) fn recompute_find(model: &mut Model) {
         }
         return;
     }
-    let cur = model.active_buffer().map(|b| b.cursor_char_index()).unwrap_or(0);
+    let cur = model
+        .active_buffer()
+        .map(|b| b.cursor_char_index())
+        .unwrap_or(0);
     let idx = model
         .find
         .matches
@@ -191,7 +194,10 @@ mod find_tests {
 
     #[test]
     fn replace_all_rebuilds_text() {
-        assert_eq!(replace_all_text("foo Foo", "foo", "bar"), ("bar bar".to_string(), 2));
+        assert_eq!(
+            replace_all_text("foo Foo", "foo", "bar"),
+            ("bar bar".to_string(), 2)
+        );
         assert_eq!(replace_all_text("abc", "x", "y"), ("abc".to_string(), 0));
     }
 }

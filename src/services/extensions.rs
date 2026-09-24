@@ -126,7 +126,11 @@ impl ExtensionRegistry {
                     manifest.name.clone(),
                     LanguageConfig {
                         extensions: lang.extensions.clone(),
-                        lsp: lang.lsp.as_ref().map(|s| join(&s.command, &s.args)).unwrap_or_default(),
+                        lsp: lang
+                            .lsp
+                            .as_ref()
+                            .map(|s| join(&s.command, &s.args))
+                            .unwrap_or_default(),
                         formatter: lang
                             .formatter
                             .as_ref()
@@ -196,7 +200,8 @@ mod tests {
     fn config_defaults_resolve_by_extension() {
         let reg = ExtensionRegistry::from_config(&config::seed().languages);
         assert_eq!(
-            reg.language_for_path(Path::new("main.rs")).map(|l| &l.id[..]),
+            reg.language_for_path(Path::new("main.rs"))
+                .map(|l| &l.id[..]),
             Some("rust")
         );
         assert_eq!(

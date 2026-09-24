@@ -22,7 +22,9 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
                 .bg(model.theme.activity_bg)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::new().fg(model.theme.fg_dim).bg(model.theme.activity_bg)
+            Style::new()
+                .fg(model.theme.fg_dim)
+                .bg(model.theme.activity_bg)
         };
         let marker = if active { "▎" } else { " " };
         let icon = model.panel_icon(panel);

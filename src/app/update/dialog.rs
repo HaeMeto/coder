@@ -116,9 +116,16 @@ pub(super) fn dialog_paste(model: &mut Model, text: &str) -> Vec<Cmd> {
 pub(super) fn dialog_mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
     if let MouseEventKind::Down(MouseButton::Left) = m.kind {
         let term = full_rect(model);
-        let hit = model.dialog.as_ref().and_then(|d| ui::dialog::hit(d, term, m.column, m.row));
+        let hit = model
+            .dialog
+            .as_ref()
+            .and_then(|d| ui::dialog::hit(d, term, m.column, m.row));
         if let Some(idx) = hit {
-            let kind = model.dialog.as_ref().map(|d| d.kind).unwrap_or(DialogKind::Ask);
+            let kind = model
+                .dialog
+                .as_ref()
+                .map(|d| d.kind)
+                .unwrap_or(DialogKind::Ask);
             return dialog_button(model, kind, idx);
         }
     }
@@ -143,11 +150,11 @@ fn dialog_confirm(model: &mut Model) -> Vec<Cmd> {
         }
         DialogAction::ResetKeybindings => reset_keybindings(model),
         DialogAction::ResetConfig => reset_config(model),
-DialogAction::OpenWorkspace => {
- let root = PathBuf::from(d.input.content().trim());
- model.open_folder(root.clone());
- vec![Cmd::ScanDir(root), Cmd::LoadGitStatus]
-}
+        DialogAction::OpenWorkspace => {
+            let root = PathBuf::from(d.input.content().trim());
+            model.open_folder(root.clone());
+            vec![Cmd::ScanDir(root), Cmd::LoadGitStatus]
+        }
         // `selected` is 0 ("Save") or 1 ("Don't Save") — index 2 ("Cancel")
         // never reaches here, `dialog_button` closes the dialog for it directly.
         DialogAction::QuitPrompt => {
@@ -221,13 +228,17 @@ fn dialog_cancel(model: &mut Model) -> Vec<Cmd> {
 
 #[cfg(test)]
 mod dialog_tests {
-    use super::sanitize_name;
     use super::dialog_key;
+    use super::sanitize_name;
     use crate::app::model::{Dialog, DialogAction, Model};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn key(c: char, ctrl: bool) -> KeyEvent {
-        let m = if ctrl { KeyModifiers::CONTROL } else { KeyModifiers::NONE };
+        let m = if ctrl {
+            KeyModifiers::CONTROL
+        } else {
+            KeyModifiers::NONE
+        };
         KeyEvent::new(KeyCode::Char(c), m)
     }
 
@@ -243,7 +254,10 @@ mod dialog_tests {
             DialogAction::None,
         ));
         dialog_key(&mut model, key('q', true));
-        assert!(model.should_quit, "Ctrl+Q must quit even with a dialog open");
+        assert!(
+            model.should_quit,
+            "Ctrl+Q must quit even with a dialog open"
+        );
     }
 
     #[test]
@@ -257,7 +271,10 @@ mod dialog_tests {
             DialogAction::None,
         ));
         dialog_key(&mut model, key('y', false));
-        assert!(model.dialog.is_none(), "'y' should confirm and close the dialog");
+        assert!(
+            model.dialog.is_none(),
+            "'y' should confirm and close the dialog"
+        );
     }
 
     #[test]
@@ -277,16 +294,16 @@ mod dialog_tests {
     /// process, so two tests sharing a directory could race each other's
     /// fixture setup/cleanup (create/write/remove on the very same path).
     fn dirty_model_with_one_tab(name: &str) -> (Model, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("coder-ask-save-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("coder-ask-save-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("f.txt");
         std::fs::write(&path, "old").unwrap();
         let mut model = Model::new(dir);
-        model.tabs.push(crate::app::model::Tab::new(crate::core::buffer::Buffer::new(
-            Some(path.clone()),
-            "old",
-        )));
+        model.tabs.push(crate::app::model::Tab::new(
+            crate::core::buffer::Buffer::new(Some(path.clone()), "old"),
+        ));
         model.tabs[0].buffer.insert_str("new");
         (model, path)
     }
@@ -297,8 +314,14 @@ mod dialog_tests {
         use crate::core::keymap::Action;
         let (mut model, _path) = dirty_model_with_one_tab("opens");
         apply_action(&mut model, Action::Quit);
-        assert!(!model.should_quit, "must ask before quitting with unsaved changes");
-        assert!(matches!(model.dialog.as_ref().map(|d| d.kind), Some(crate::app::model::DialogKind::AskSave)));
+        assert!(
+            !model.should_quit,
+            "must ask before quitting with unsaved changes"
+        );
+        assert!(matches!(
+            model.dialog.as_ref().map(|d| d.kind),
+            Some(crate::app::model::DialogKind::AskSave)
+        ));
     }
 
     #[test]
@@ -308,7 +331,10 @@ mod dialog_tests {
         let (mut model, path) = dirty_model_with_one_tab("save");
         apply_action(&mut model, Action::Quit);
         // "Save" is the default selection (index 0).
-        dialog_key(&mut model, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        dialog_key(
+            &mut model,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
         assert!(model.should_quit);
         assert!(!model.tabs[0].buffer.dirty);
         let _ = std::fs::remove_file(&path);
@@ -322,8 +348,15 @@ mod dialog_tests {
         apply_action(&mut model, Action::Quit);
         dialog_key(&mut model, key('d', false));
         assert!(model.should_quit);
-        assert!(model.tabs[0].buffer.dirty, "not written back, but nothing is lost either");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "old", "the real file is untouched");
+        assert!(
+            model.tabs[0].buffer.dirty,
+            "not written back, but nothing is lost either"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "old",
+            "the real file is untouched"
+        );
         let _ = std::fs::remove_file(&path);
     }
 

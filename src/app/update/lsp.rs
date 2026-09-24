@@ -286,7 +286,10 @@ fn filter_items(items: Vec<lsp::CompletionItem>, prefix: &str) -> Vec<lsp::Compl
         .filter_map(|it| match_score(&it.filter_text, prefix).map(|s| (s, it)))
         .collect();
     // Stable within a tier: fall back to the server's own ranking.
-    scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.sort_text.cmp(&b.1.sort_text)));
+    scored.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.sort_text.cmp(&b.1.sort_text))
+    });
     scored.into_iter().map(|(_, it)| it).collect()
 }
 
@@ -308,7 +311,8 @@ pub(super) fn completions_arrived(
     items: Vec<lsp::CompletionItem>,
 ) -> Vec<Cmd> {
     let (tab, version) = token;
-    if model.active_tab != Some(tab) || model.tabs.get(tab).map(|t| t.buffer.version) != Some(version)
+    if model.active_tab != Some(tab)
+        || model.tabs.get(tab).map(|t| t.buffer.version) != Some(version)
     {
         return Vec::new(); // superseded by newer typing / a tab switch
     }
@@ -610,10 +614,7 @@ mod tests {
         // Two non-overlapping edits on one line; applied from the end so offsets hold.
         let mut b = Buffer::new(None, "let x=1");
         // Replace "=" (col5..6) with " = ", and "x" (col4..5) with "y".
-        apply_text_edits(
-            &mut b,
-            &[edit(0, 5, 0, 6, " = "), edit(0, 4, 0, 5, "y")],
-        );
+        apply_text_edits(&mut b, &[edit(0, 5, 0, 6, " = "), edit(0, 4, 0, 5, "y")]);
         assert_eq!(b.full_text(), "let y = 1");
     }
 
@@ -650,7 +651,10 @@ mod tests {
         let items = vec![item("len", "b"), item("iter", "a")];
         let kept = filter_items(items, "");
         assert_eq!(kept.len(), 2);
-        assert_eq!(kept[0].label, "iter", "ties fall back to the server's sortText");
+        assert_eq!(
+            kept[0].label, "iter",
+            "ties fall back to the server's sortText"
+        );
     }
 
     #[test]
@@ -658,7 +662,10 @@ mod tests {
         let items = vec![item("enable_raw_mode", "a"), item("erase", "b")];
         let kept = filter_items(items, "erm");
         // "erase" has no 'm'; only the subsequence hit survives.
-        assert_eq!(kept.iter().map(|i| &i.label[..]).collect::<Vec<_>>(), ["enable_raw_mode"]);
+        assert_eq!(
+            kept.iter().map(|i| &i.label[..]).collect::<Vec<_>>(),
+            ["enable_raw_mode"]
+        );
     }
 
     #[test]

@@ -49,9 +49,9 @@ pub enum Cmd {
     GitPull,
     GitPush,
 
- /// Enumerate every workspace file for the quickbar's "search file" list.
- /// Result -> `Msg::FilesListed`.
- ListFiles,
+    /// Enumerate every workspace file for the quickbar's "search file" list.
+    /// Result -> `Msg::FilesListed`.
+    ListFiles,
     RunSearch {
         query: String,
         use_regex: bool,
@@ -359,14 +359,12 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
             });
         }
         Cmd::LoadCommitDiff(hash) => {
-            tokio::task::spawn_blocking(move || {
-                match services::git::commit_diff(&root, &hash) {
-                    Ok(diff) => {
-                        let _ = tx.send(Msg::CommitDiffLoaded { hash, diff });
-                    }
-                    Err(e) => {
-                        let _ = tx.send(Msg::Error(format!("could not load commit diff: {e}")));
-                    }
+            tokio::task::spawn_blocking(move || match services::git::commit_diff(&root, &hash) {
+                Ok(diff) => {
+                    let _ = tx.send(Msg::CommitDiffLoaded { hash, diff });
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::Error(format!("could not load commit diff: {e}")));
                 }
             });
         }
@@ -481,13 +479,13 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
                 send_git_status(&root, &tx);
             });
         }
- Cmd::ListFiles => {
- let root = root.clone();
- tokio::task::spawn_blocking(move || {
- let paths = services::search::list_files(&root);
- let _ = tx.send(Msg::FilesListed { paths });
- });
- }
+        Cmd::ListFiles => {
+            let root = root.clone();
+            tokio::task::spawn_blocking(move || {
+                let paths = services::search::list_files(&root);
+                let _ = tx.send(Msg::FilesListed { paths });
+            });
+        }
         Cmd::RunSearch {
             query,
             use_regex,
@@ -609,21 +607,21 @@ pub fn execute(cmd: Cmd, root: PathBuf, tx: UnboundedSender<Msg>) {
                 }
             });
         }
- Cmd::SetClipboard(text) => {
- // OSC-52 must be written on this (main) thread: stdout is owned by the
- // crossterm TUI, and writing it from a background task could interleave
- // bytes with a concurrent render. It asks the *local* terminal (through
- // SSH / tmux / a remote that has no display) to copy into its own
- // clipboard, which is what makes copy reach the user's Windows host.
- services::clipboard::emit_osc52(&text);
- // The native system clipboard (X11/Wayland) is a separate channel that
- // only works on a local desktop; it may be slow (a wayland round-trip)
- // so keep it off the render thread.
- let text2 = text;
- tokio::task::spawn_blocking(move || {
- services::clipboard::set_system(&text2);
- });
- }
+        Cmd::SetClipboard(text) => {
+            // OSC-52 must be written on this (main) thread: stdout is owned by the
+            // crossterm TUI, and writing it from a background task could interleave
+            // bytes with a concurrent render. It asks the *local* terminal (through
+            // SSH / tmux / a remote that has no display) to copy into its own
+            // clipboard, which is what makes copy reach the user's Windows host.
+            services::clipboard::emit_osc52(&text);
+            // The native system clipboard (X11/Wayland) is a separate channel that
+            // only works on a local desktop; it may be slow (a wayland round-trip)
+            // so keep it off the render thread.
+            let text2 = text;
+            tokio::task::spawn_blocking(move || {
+                services::clipboard::set_system(&text2);
+            });
+        }
         Cmd::CheckTools(commands) => {
             tokio::task::spawn_blocking(move || {
                 let statuses = commands
