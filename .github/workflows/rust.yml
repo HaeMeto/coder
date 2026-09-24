@@ -105,9 +105,7 @@ jobs:
           - OS: macos-14
             TOOLCHAIN: stable
             TARGET: aarch64-apple-darwin
-          - OS: macos-13
-            TOOLCHAIN: stable
-            TARGET: x86_64-apple-darwin
+
     steps:
       - name: Checkout the repository
         uses: actions/checkout@v4
