@@ -285,7 +285,6 @@ fn tab_session_key(t: &Tab) -> Option<String> {
     t.buffer.path.as_ref().map(|p| p.display().to_string())
 }
 
-/// The active input field in the search panel.
 /// What a preview tab shows: a file (Files panel), a file's working-tree diff
 /// or a commit's patch (Git panel). Identifies an in-flight preview load.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -295,11 +294,47 @@ pub enum PreviewKey {
     Commit(String),
 }
 
+/// The keyboard-focused control in the search panel: one of the two text
+/// inputs, or one of the option checkboxes (reached with Tab, toggled with
+/// Enter/Space).
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SearchField {
     #[default]
     Query,
+    /// The "[ ] Replace" checkbox.
+    ReplaceToggle,
     Replace,
+    Regex,
+    MatchCase,
+    SearchHidden,
+}
+
+impl SearchField {
+    /// Tab order, top to bottom. The replace input is only reachable while
+    /// replace mode shows it.
+    fn order(replace_mode: bool) -> &'static [SearchField] {
+        use SearchField::*;
+        if replace_mode {
+            &[
+                Query,
+                ReplaceToggle,
+                Replace,
+                Regex,
+                MatchCase,
+                SearchHidden,
+            ]
+        } else {
+            &[Query, ReplaceToggle, Regex, MatchCase, SearchHidden]
+        }
+    }
+
+    /// The control `dir` steps away in Tab order, wrapping at both ends.
+    pub fn step(self, dir: isize, replace_mode: bool) -> SearchField {
+        let order = Self::order(replace_mode);
+        let len = order.len() as isize;
+        let i = order.iter().position(|f| *f == self).unwrap_or(0) as isize;
+        order[(i + dir).rem_euclid(len) as usize]
+    }
 }
 
 #[derive(Default)]
@@ -320,6 +355,17 @@ pub struct SearchState {
     pub field: SearchField,
     pub results: Vec<SearchMatch>,
     pub selected: usize,
+}
+
+impl SearchState {
+    /// Shows/hides the replace input. When it disappears, keyboard focus
+    /// leaves it so keys never route to an input that is no longer drawn.
+    pub fn toggle_replace_mode(&mut self) {
+        self.replace_mode = !self.replace_mode;
+        if !self.replace_mode && self.field == SearchField::Replace {
+            self.field = SearchField::Query;
+        }
+    }
 }
 
 /// Keyboard focus zone inside the Git panel, cycled with Tab.

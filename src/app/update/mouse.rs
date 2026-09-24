@@ -359,15 +359,7 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
                     model.sidebar.search.field = SearchField::Replace;
                     model.focus = Focus::SearchInput;
                 }
-                Some(SearchHit::ReplaceModeToggle) => {
-                    let s = &mut model.sidebar.search;
-                    s.replace_mode = !s.replace_mode;
-                    // The replace field just disappeared: don't leave focus
-                    // routed to an input that is no longer drawn.
-                    if !s.replace_mode && s.field == SearchField::Replace {
-                        s.field = SearchField::Query;
-                    }
-                }
+                Some(SearchHit::ReplaceModeToggle) => model.sidebar.search.toggle_replace_mode(),
                 Some(SearchHit::RegexToggle) => {
                     model.sidebar.search.use_regex = !model.sidebar.search.use_regex;
                     return rerun_search(model);

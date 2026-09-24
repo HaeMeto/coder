@@ -223,6 +223,33 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         {
             Vec::new()
         }
+        // Search panel: the arrows walk one vertical list — inputs and option
+        // checkboxes on top, results below — crossing between the two.
+        Action::NavUp | Action::NavDown if model.focus == Focus::SearchInput => {
+            let down = matches!(action, Action::NavDown);
+            let s = &mut model.sidebar.search;
+            if down && s.field == SearchField::SearchHidden {
+                // Past the last option: into the results.
+                if !s.results.is_empty() {
+                    s.selected = 0;
+                    model.focus = Focus::Sidebar;
+                    return preview_selection(model);
+                }
+            } else if down || s.field != SearchField::Query {
+                s.field = s.field.step(if down { 1 } else { -1 }, s.replace_mode);
+            }
+            Vec::new()
+        }
+        Action::NavUp
+            if model.focus == Focus::Sidebar
+                && model.sidebar.active == Panel::Search
+                && model.sidebar.search.selected == 0 =>
+        {
+            // Above the first result: back up to the last option.
+            model.sidebar.search.field = SearchField::SearchHidden;
+            model.focus = Focus::SearchInput;
+            Vec::new()
+        }
         Action::NavUp | Action::NavDown => {
             nav(
                 model,
@@ -254,17 +281,9 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         Action::DeleteEntry => on_selected_row(model, delete_dialog),
 
         // ----- Search (typing handled by the focused input widget) -----
-        Action::SearchToggleField => {
+        Action::SearchCycleField(dir) => {
             let s = &mut model.sidebar.search;
-            // Tab into the replace field only when it is actually shown — with
-            // replace mode off there is nothing to switch to, so this is a
-            // no-op rather than routing focus to a field that isn't drawn.
-            if s.replace_mode {
-                s.field = match s.field {
-                    SearchField::Query => SearchField::Replace,
-                    SearchField::Replace => SearchField::Query,
-                };
-            }
+            s.field = s.field.step(dir, s.replace_mode);
             Vec::new()
         }
         Action::SearchToggleRegex => {
@@ -272,6 +291,28 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
             rerun_search(model)
         }
         Action::SearchSubmit => {
+            // Enter/Space on a checkbox toggles it (search options re-run the
+            // search live, like a mouse click).
+            let s = &mut model.sidebar.search;
+            match s.field {
+                SearchField::ReplaceToggle => {
+                    s.toggle_replace_mode();
+                    return Vec::new();
+                }
+                SearchField::Regex => {
+                    s.use_regex = !s.use_regex;
+                    return rerun_search(model);
+                }
+                SearchField::MatchCase => {
+                    s.match_case = !s.match_case;
+                    return rerun_search(model);
+                }
+                SearchField::SearchHidden => {
+                    s.search_hidden = !s.search_hidden;
+                    return rerun_search(model);
+                }
+                SearchField::Query | SearchField::Replace => {}
+            }
             let s = &model.sidebar.search;
             let query = s.query.content().to_string();
             let (use_regex, match_case, search_hidden) =
@@ -301,6 +342,7 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
                         search_hidden,
                     }]
                 }
+                _ => Vec::new(),
             }
         }
 
@@ -364,23 +406,79 @@ mod tests {
     use crate::app::model::SearchField;
 
     #[test]
-    fn search_tab_does_not_focus_the_hidden_replace_field() {
+    fn search_tab_skips_the_hidden_replace_field() {
         // With replace mode off (the default), the replace row isn't drawn at
-        // all — Tab must stay on Query rather than routing focus to a field
-        // the user can't see.
+        // all — Tab must never route focus to a field the user can't see.
         let mut model = Model::new(std::env::temp_dir());
         assert!(!model.sidebar.search.replace_mode);
-        apply_action(&mut model, Action::SearchToggleField);
-        assert_eq!(model.sidebar.search.field, SearchField::Query);
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            apply_action(&mut model, Action::SearchCycleField(1));
+            seen.push(model.sidebar.search.field);
+        }
+        assert_eq!(
+            seen,
+            [
+                SearchField::ReplaceToggle,
+                SearchField::Regex,
+                SearchField::MatchCase,
+                SearchField::SearchHidden,
+                SearchField::Query,
+            ]
+        );
     }
 
     #[test]
-    fn search_tab_cycles_fields_once_replace_mode_is_on() {
+    fn search_tab_reaches_replace_field_once_replace_mode_is_on() {
         let mut model = Model::new(std::env::temp_dir());
         model.sidebar.search.replace_mode = true;
-        apply_action(&mut model, Action::SearchToggleField);
+        model.sidebar.search.field = SearchField::ReplaceToggle;
+        apply_action(&mut model, Action::SearchCycleField(1));
         assert_eq!(model.sidebar.search.field, SearchField::Replace);
-        apply_action(&mut model, Action::SearchToggleField);
+        apply_action(&mut model, Action::SearchCycleField(-1));
+        apply_action(&mut model, Action::SearchCycleField(-1));
         assert_eq!(model.sidebar.search.field, SearchField::Query);
+        apply_action(&mut model, Action::SearchCycleField(-1));
+        assert_eq!(model.sidebar.search.field, SearchField::SearchHidden);
+    }
+
+    #[test]
+    fn enter_toggles_the_focused_search_option() {
+        let mut model = Model::new(std::env::temp_dir());
+        let s = &mut model.sidebar.search;
+        s.field = SearchField::ReplaceToggle;
+        apply_action(&mut model, Action::SearchSubmit);
+        assert!(model.sidebar.search.replace_mode);
+        model.sidebar.search.field = SearchField::MatchCase;
+        apply_action(&mut model, Action::SearchSubmit);
+        assert!(model.sidebar.search.match_case);
+        apply_action(&mut model, Action::SearchSubmit);
+        assert!(!model.sidebar.search.match_case);
+    }
+
+    #[test]
+    fn arrows_cross_between_search_options_and_results() {
+        let mut model = Model::new(std::env::temp_dir());
+        model.sidebar.active = Panel::Search;
+        model.focus = Focus::SearchInput;
+        model.sidebar.search.results = vec![crate::services::search::SearchMatch {
+            path: "/w/a.rs".into(),
+            rel: "a.rs".into(),
+            line_no: 1,
+            line: "x".into(),
+            ranges: Vec::new(),
+        }];
+        // Query -> ... -> SearchHidden -> first result.
+        for _ in 0..4 {
+            apply_action(&mut model, Action::NavDown);
+        }
+        assert_eq!(model.sidebar.search.field, SearchField::SearchHidden);
+        apply_action(&mut model, Action::NavDown);
+        assert_eq!(model.focus, Focus::Sidebar);
+        assert_eq!(model.sidebar.search.selected, 0);
+        // Up from the first result goes back to the options.
+        apply_action(&mut model, Action::NavUp);
+        assert_eq!(model.focus, Focus::SearchInput);
+        assert_eq!(model.sidebar.search.field, SearchField::SearchHidden);
     }
 }

@@ -2,7 +2,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -103,13 +103,25 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
     let has_results = !s.results.is_empty();
     let has_query = !s.query.is_empty();
 
-    // A checkbox row: "[x] Label", accent when on, dim when off.
-    let check = |on: bool, label: &str| -> Line<'static> {
+    // A checkbox row: "[x] Label", accent when on, dim when off. The row
+    // holding keyboard focus (Tab) is drawn inverted across the full width.
+    let check = |on: bool, label: &str, field: SearchField| -> Line<'static> {
         let box_ = if on { "[x]" } else { "[ ]" };
-        Line::from(Span::styled(
-            format!(" {box_} {label}"),
-            Style::new().fg(if on { th.accent } else { th.fg_dim }),
-        ))
+        let text = format!(" {box_} {label}");
+        if input_focused && s.field == field {
+            Line::from(Span::styled(
+                format!("{text:<width$}"),
+                Style::new()
+                    .fg(th.statusbar_fg)
+                    .bg(th.accent)
+                    .add_modifier(Modifier::BOLD),
+            ))
+        } else {
+            Line::from(Span::styled(
+                text,
+                Style::new().fg(if on { th.accent } else { th.fg_dim }),
+            ))
+        }
     };
     // Input rows are drawn by the shared TextInput widget as an overlay (see
     // below); reserve a blank sunken row for them here.
@@ -133,7 +145,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
                 blank_input()
             }
             Row::Blank => Span::from("").into(),
-            Row::ReplaceToggle => check(s.replace_mode, "Replace"),
+            Row::ReplaceToggle => check(s.replace_mode, "Replace", SearchField::ReplaceToggle),
             Row::ReplaceInput => {
                 replace_row = Some(i as u16);
                 blank_input()
@@ -146,12 +158,13 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
                 "Replace All",
                 has_query,
             ),
-            Row::Regex => Line::from(Span::styled(
-                format!(" {} RegExp", if s.use_regex { "[x]" } else { "[ ]" }),
-                Style::new().fg(if s.use_regex { th.accent } else { th.fg_dim }),
-            )),
-            Row::MatchCase => check(s.match_case, "Match Case"),
-            Row::SearchHidden => check(s.search_hidden, "Search Ignored & Hidden"),
+            Row::Regex => check(s.use_regex, "RegExp", SearchField::Regex),
+            Row::MatchCase => check(s.match_case, "Match Case", SearchField::MatchCase),
+            Row::SearchHidden => check(
+                s.search_hidden,
+                "Search Ignored & Hidden",
+                SearchField::SearchHidden,
+            ),
             Row::Count => Line::from(Span::styled(
                 format!("- {} results: -", s.results.len()),
                 Style::new().fg(th.fg_dim),

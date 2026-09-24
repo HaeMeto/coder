@@ -664,6 +664,8 @@ fn focused_input(model: &mut Model) -> Option<(&mut TextInputState, bool)> {
             let s = match model.sidebar.search.field {
                 SearchField::Query => &mut model.sidebar.search.query,
                 SearchField::Replace => &mut model.sidebar.search.replace,
+                // A checkbox has keyboard focus: no text field takes the key.
+                _ => return None,
             };
             Some((s, false))
         }

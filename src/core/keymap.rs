@@ -65,7 +65,9 @@ pub enum Action {
 
     // Search input (text editing is handled by the focused input widget itself)
     SearchSubmit,
-    SearchToggleField,
+    /// Tab / Shift+Tab in the search panel: step through the inputs and the
+    /// option checkboxes. The `isize` is the step through the Tab order.
+    SearchCycleField(isize),
     SearchToggleRegex,
 
     // In-editor find / replace widget (text editing handled by the input widget)
@@ -222,8 +224,10 @@ fn resolve_search(key: KeyEvent) -> Option<Action> {
     }
     // Typing/motion is consumed by the focused input widget upstream.
     match key.code {
-        KeyCode::Tab => Some(Action::SearchToggleField), // query <-> replace
-        KeyCode::Enter => Some(Action::SearchSubmit),
+        KeyCode::Tab => Some(Action::SearchCycleField(1)),
+        KeyCode::BackTab => Some(Action::SearchCycleField(-1)),
+        // Space only gets here on a checkbox: the text inputs consume it.
+        KeyCode::Enter | KeyCode::Char(' ') => Some(Action::SearchSubmit),
         KeyCode::Up => Some(Action::NavUp),
         KeyCode::Down => Some(Action::NavDown),
         KeyCode::Esc => Some(Action::Escape),
