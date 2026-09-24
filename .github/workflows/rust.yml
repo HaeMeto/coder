@@ -23,17 +23,12 @@ jobs:
         shell: bash
         run: echo "RELEASE_VERSION=${GITHUB_REF:11}" >> "$GITHUB_ENV"
 
+      # Only a C compiler is needed (libgit2 and zlib are built from source by
+      # their -sys crates); curl + ca-certificates are for the Rust installer.
       - name: Install system dependencies
         run: |
           apt-get update
-          apt-get install -y \
-            build-essential \
-            ca-certificates \
-            curl \
-            pkg-config \
-            libssl-dev \
-            zlib1g-dev \
-            libutempter-dev
+          apt-get install -y build-essential ca-certificates curl
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -118,26 +113,17 @@ jobs:
         shell: bash
         run: echo "RELEASE_VERSION=${GITHUB_REF:11}" >> "$GITHUB_ENV"
 
-      - name: Install system dependencies (Linux)
-        if: runner.os == 'Linux'
+      - name: Install cross C compiler (Linux)
+        if: matrix.build.EXTRA_DEPS != ''
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            ca-certificates \
-            curl \
-            pkg-config \
-            libssl-dev \
-            zlib1g-dev \
-            libutempter-dev \
-            ${{ matrix.build.EXTRA_DEPS }}
+          sudo apt-get install -y ${{ matrix.build.EXTRA_DEPS }}
 
       - name: Configure cross C linker (Linux aarch64)
         if: matrix.build.TARGET == 'aarch64-unknown-linux-gnu'
         shell: bash
         run: |
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
           echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
@@ -184,9 +170,8 @@ jobs:
           release_name: "coder v${{ env.RELEASE_VERSION }}"
           repo_token: ${{ secrets.RELEASE_TOKEN }}
 
-  # Best-effort static musl build for Alpine and very old-glibc distros.
-  # continue-on-error: openssl-sys + arboard/x11rb cross-compilation to musl is
-  # fragile and should never block the whole release if it fails.
+  # Static musl build for Alpine and very old-glibc distros. Kept best-effort
+  # (continue-on-error) so it never blocks the other release assets.
   linux-musl:
     name: Linux musl (x86_64 Alpine/static)
     runs-on: ubuntu-latest
@@ -202,7 +187,7 @@ jobs:
       - name: Install musl toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y musl-tools pkg-config
+          sudo apt-get install -y musl-tools
 
       - name: Install Rust toolchain (musl target)
         uses: dtolnay/rust-toolchain@stable
@@ -212,15 +197,8 @@ jobs:
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Build (static, bundled OpenSSL)
-        run: |
-          export OPENSSL_STATIC=1
-          export PKG_CONFIG_ALLOW_CROSS=1
-          cargo build --release --locked --target x86_64-unknown-linux-musl
-        env:
-          OPENSSL_STATIC: 1
-          OPENSSL_DIR: /usr
-          PKG_CONFIG_ALLOW_CROSS: 1
+      - name: Build (static)
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
 
       - name: Prepare release asset
         shell: bash
