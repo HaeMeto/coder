@@ -152,6 +152,36 @@ impl Buffer {
         self.rope.to_string()
     }
 
+    /// The terminator that ends `line` in the rope: `"\r\n"`, `"\n"`, or `""`
+    /// for the final line (or one past the end).
+    fn line_ending(&self, line: usize) -> &'static str {
+        if line >= self.rope.len_lines() {
+            return "";
+        }
+        let slice = self.rope.line(line);
+        let n = slice.len_chars();
+        if n == 0 || slice.char(n - 1) != '\n' {
+            ""
+        } else if n >= 2 && slice.char(n - 2) == '\r' {
+            "\r\n"
+        } else {
+            "\n"
+        }
+    }
+
+    /// The line break to insert on `line`: its own terminator, or — for the
+    /// unterminated last line — the one of the line above, so a CRLF file stays
+    /// CRLF. Falls back to `"\n"`.
+    fn newline_for(&self, line: usize) -> &'static str {
+        match self.line_ending(line) {
+            "" => match line.checked_sub(1).map(|l| self.line_ending(l)) {
+                Some("\r\n") => "\r\n",
+                _ => "\n",
+            },
+            nl => nl,
+        }
+    }
+
     /// Absolute character index of the cursor (for find/replace positioning).
     pub fn cursor_char_index(&self) -> usize {
         self.cursor_to_char(self.cursor)
@@ -233,6 +263,12 @@ impl Buffer {
         let s = self.cursor_to_char(start);
         let e = self.cursor_to_char(end);
         Some(self.rope.slice(s..e).to_string())
+    }
+
+    /// Number of chars in the selection, without copying it out.
+    pub fn selected_char_count(&self) -> Option<usize> {
+        let (start, end) = self.selection_range()?;
+        Some(self.cursor_to_char(end) - self.cursor_to_char(start))
     }
 
     pub fn clear_selection(&mut self) {
@@ -494,7 +530,8 @@ impl Buffer {
     pub fn insert_newline(&mut self) {
         self.delete_selection_internal();
         let indent = self.indent_at_cursor();
-        self.insert_str(&format!("\n{indent}"));
+        let nl = self.newline_for(self.cursor.line);
+        self.insert_str(&format!("{nl}{indent}"));
     }
 
     /// Inserts pasted text, re-indenting the continuation lines so the block
@@ -570,17 +607,13 @@ impl Buffer {
             self.rope.len_chars()
         };
         let old = self.rope.slice(region_start..region_end).to_string();
-        let trailing_newline = old.ends_with('\n');
 
+        // Terminators stay with their slot (position in the region), so the
+        // region's last line keeps having none at EOF and CRLF stays CRLF.
         let mut new_text = String::new();
         for (i, &ln) in order.iter().enumerate() {
-            if i > 0 {
-                new_text.push('\n');
-            }
             new_text.push_str(&self.line_text(ln));
-        }
-        if trailing_newline {
-            new_text.push('\n');
+            new_text.push_str(self.line_ending(region_start_line + i));
         }
 
         let cursor_before = self.cursor;
@@ -664,10 +697,7 @@ impl Buffer {
         };
         let old = self.rope.slice(region_start..region_end).to_string();
         let mut new_text = String::new();
-        for (offset, ln) in (start..=end).enumerate() {
-            if offset > 0 {
-                new_text.push('\n');
-            }
+        for ln in start..=end {
             let t = self.line_text(ln);
             if indent {
                 if !t.is_empty() {
@@ -678,9 +708,7 @@ impl Buffer {
                 let drop = leading_indent_width(&t);
                 new_text.extend(t.chars().skip(drop));
             }
-        }
-        if old.ends_with('\n') {
-            new_text.push('\n');
+            new_text.push_str(self.line_ending(ln));
         }
         // Dedenting lines with no indent changes nothing — skip the edit so it
         // does not bump the version or leave an empty undo step.
@@ -723,12 +751,19 @@ impl Buffer {
         if idx == 0 {
             return;
         }
-        let removed: String = self.rope.slice(idx - 1..idx).to_string();
+        // A CRLF line break is one unit: joining lines removes both chars.
+        let start =
+            if idx >= 2 && self.rope.char(idx - 1) == '\n' && self.rope.char(idx - 2) == '\r' {
+                idx - 2
+            } else {
+                idx - 1
+            };
+        let removed: String = self.rope.slice(start..idx).to_string();
         let cursor_before = self.cursor;
-        self.rope.remove(idx - 1..idx);
-        self.cursor = self.char_to_cursor(idx - 1);
+        self.rope.remove(start..idx);
+        self.cursor = self.char_to_cursor(start);
         self.push_edit(Edit {
-            char_idx: idx - 1,
+            char_idx: start,
             before: removed,
             after: String::new(),
             cursor_before,
@@ -746,9 +781,19 @@ impl Buffer {
         if idx >= self.rope.len_chars() {
             return;
         }
-        let removed: String = self.rope.slice(idx..idx + 1).to_string();
+        // At the end of a CRLF line the cursor sits on the '\r': delete the
+        // whole break, not half of it.
+        let end = if self.rope.char(idx) == '\r'
+            && idx + 1 < self.rope.len_chars()
+            && self.rope.char(idx + 1) == '\n'
+        {
+            idx + 2
+        } else {
+            idx + 1
+        };
+        let removed: String = self.rope.slice(idx..end).to_string();
         let cursor_before = self.cursor;
-        self.rope.remove(idx..idx + 1);
+        self.rope.remove(idx..end);
         self.push_edit(Edit {
             char_idx: idx,
             before: removed,
@@ -900,28 +945,73 @@ fn leading_indent_width(line: &str) -> usize {
     }
 }
 
+/// Pretty-prints a pasted minified JSON blob (e.g. copied from a browser's
+/// network tab) so it lands readable instead of as one giant line. Fires only
+/// when the paste is, as a whole:
+/// - a single line of at least [`MIN_JSON_PASTE`] chars — short snippets like
+///   `{"a":1}` or `[1, 2, 3]` typed into code stay verbatim;
+/// - a JSON object, or a non-empty array of objects (never a list of scalars);
+/// - losslessly representable: re-serializing the parsed value compactly must
+///   reproduce the input minus insignificant whitespace, so duplicate keys,
+///   escape spellings (`\u00e9`) or number formats are never silently changed.
+///   (serde_json's `preserve_order` + `arbitrary_precision` keep key order and
+///   big/precise numbers intact.)
+///
+/// Deliberately unconditional (not behind `format_on_paste`): it only ever
+/// fires on strictly valid, round-trippable JSON.
+fn pretty_print_json(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.contains('\n')
+        || trimmed.chars().count() < MIN_JSON_PASTE
+        || !(trimmed.starts_with('{') || trimmed.starts_with('['))
+    {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    let shape_ok = match &value {
+        serde_json::Value::Object(_) => true,
+        serde_json::Value::Array(items) => {
+            !items.is_empty() && items.iter().all(serde_json::Value::is_object)
+        }
+        _ => false,
+    };
+    if !shape_ok || serde_json::to_string(&value).ok()? != strip_json_whitespace(trimmed) {
+        return None;
+    }
+    serde_json::to_string_pretty(&value).ok()
+}
+
+/// Shortest paste [`pretty_print_json`] will reformat.
+const MIN_JSON_PASTE: usize = 64;
+
+/// `text` with every whitespace char outside JSON string literals removed.
+fn strip_json_whitespace(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let (mut in_str, mut escaped) = (false, false);
+    for c in text.chars() {
+        if in_str {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+        } else if c == '"' {
+            in_str = true;
+            out.push(c);
+        } else if !c.is_whitespace() {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Re-indents a multi-line paste. The first line is left verbatim (the cursor
 /// already supplies its indent). Every continuation line has the block's shared
 /// minimum indentation stripped and `base` — the indentation of the line the
 /// paste lands on — prefixed instead. Blank lines stay empty.
-/// Pretty-prints `text` if (and only if) it is, as a whole, a JSON object or
-/// array — the common "pasted a minified JSON blob" case. Gated on the first
-/// non-whitespace char being `{`/`[` so this never touches plain text that
-/// merely happens to parse as a bare JSON scalar (e.g. pasting the word `null`
-/// or a bare number into code): those would round-trip unchanged anyway, but
-/// skipping them avoids paying a parse for every ordinary paste.
-/// Deliberately unconditional (not behind `format_on_paste`): it only ever
-/// fires on strictly valid JSON, so it can't misfire on code that merely looks
-/// structured (unquoted keys, trailing commas, comments — all invalid JSON).
-fn pretty_print_json(text: &str) -> Option<String> {
-    let trimmed = text.trim();
-    if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
-        return None;
-    }
-    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
-    serde_json::to_string_pretty(&value).ok()
-}
-
 fn reindent_paste(text: &str, base: &str) -> String {
     let lines: Vec<&str> = text.split('\n').collect();
     // Shared indentation is measured across the continuation lines only; the
@@ -1273,12 +1363,14 @@ mod tests {
     fn paste_pretty_prints_minified_json_object() {
         // A minified JSON blob (e.g. copied from a browser's network tab) is a
         // single line with no newline — it must still get pretty-printed rather
-        // than land as one giant line.
+        // than land as one giant line. Key order and a number beyond u64 survive.
         let mut b = Buffer::new(None, "");
-        b.insert_paste(r#"{"a":1,"b":[2,3]}"#);
+        b.insert_paste(
+            r#"{"zeta":"coder","alpha":"0.2.0","tags":["editor","tui"],"big":123456789012345678901234567890}"#,
+        );
         assert_eq!(
             b.full_text(),
-            "{\n  \"a\": 1,\n  \"b\": [\n    2,\n    3\n  ]\n}"
+            "{\n  \"zeta\": \"coder\",\n  \"alpha\": \"0.2.0\",\n  \"tags\": [\n    \"editor\",\n    \"tui\"\n  ],\n  \"big\": 123456789012345678901234567890\n}"
         );
     }
 
@@ -1288,8 +1380,92 @@ mod tests {
         // so it still lands at the cursor's indentation, not column 0.
         let mut b = Buffer::new(None, "    ");
         b.cursor = Cursor { line: 0, col: 4 };
-        b.insert_paste(r#"{"a":1}"#);
-        assert_eq!(b.full_text(), "    {\n      \"a\": 1\n    }");
+        b.insert_paste(r#"{"a":"0123456789012345678901234567890123456789","b":"0123456789"}"#);
+        assert_eq!(
+            b.full_text(),
+            "    {\n      \"a\": \"0123456789012345678901234567890123456789\",\n      \"b\": \"0123456789\"\n    }"
+        );
+    }
+
+    #[test]
+    fn paste_leaves_short_scalar_lists_and_lossy_json_alone() {
+        let long_list = format!(
+            "[{}]",
+            (0..40)
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        for text in [
+            r#"{"a":1,"b":[2,3]}"#.to_string(), // too short to be a "blob"
+            long_list,                          // array of scalars
+            // Duplicate key: parsing would drop one.
+            r#"{"key":"aaaaaaaaaaaaaaaaaaaaaaaa","key":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}"#
+                .to_string(),
+            // Escape spelling would change (é -> é).
+            r#"{"name":"café café café café","other":"xxxxxxxxxxxxxxxx"}"#.to_string(),
+        ] {
+            let mut b = Buffer::new(None, "");
+            b.insert_paste(&text);
+            assert_eq!(b.full_text(), text);
+        }
+    }
+
+    #[test]
+    fn only_line_feed_breaks_lines() {
+        // Lone CR, form feed, NEL and U+2028 are ordinary chars, matching
+        // str::lines, syntect and LSP line numbering.
+        let b = Buffer::new(None, "a\rb\u{c}c\u{85}d\u{2028}e\nf");
+        assert_eq!(b.line_count(), 2);
+        assert_eq!(b.line_text(1), "f");
+        let crlf = Buffer::new(None, "one\r\ntwo\r\n");
+        assert_eq!(crlf.line_count(), 3);
+        assert_eq!(crlf.line_text(0), "one");
+        assert_eq!(crlf.line_len(0), 3);
+    }
+
+    #[test]
+    fn crlf_break_is_one_unit_for_backspace_and_delete() {
+        let mut b = Buffer::new(None, "ab\r\ncd");
+        b.cursor = Cursor { line: 1, col: 0 };
+        b.backspace();
+        assert_eq!(b.full_text(), "abcd");
+        assert_eq!(b.cursor, Cursor { line: 0, col: 2 });
+
+        let mut b = Buffer::new(None, "ab\r\ncd");
+        b.cursor = Cursor { line: 0, col: 2 };
+        b.delete_forward();
+        assert_eq!(b.full_text(), "abcd");
+        b.undo();
+        assert_eq!(b.full_text(), "ab\r\ncd");
+    }
+
+    #[test]
+    fn crlf_files_stay_crlf_when_editing_lines() {
+        let mut b = Buffer::new(None, "  a\r\nb\r\nc");
+        b.cursor = Cursor { line: 0, col: 3 };
+        b.insert_newline();
+        assert_eq!(b.full_text(), "  a\r\n  \r\nb\r\nc");
+
+        // The unterminated last line borrows the line above's CRLF.
+        let mut b = Buffer::new(None, "a\r\nb");
+        b.cursor = Cursor { line: 1, col: 1 };
+        b.insert_newline();
+        assert_eq!(b.full_text(), "a\r\nb\r\n");
+
+        let mut b = Buffer::new(None, "a\r\nb\r\nc");
+        b.cursor = Cursor { line: 2, col: 0 };
+        b.move_lines(-1);
+        assert_eq!(b.full_text(), "a\r\nc\r\nb");
+        b.move_lines(-1);
+        assert_eq!(b.full_text(), "c\r\na\r\nb");
+
+        let mut b = Buffer::new(None, "a\r\nb\r\n");
+        b.select_all();
+        b.indent_selection();
+        assert_eq!(b.full_text(), "    a\r\n    b\r\n");
+        b.dedent_selection();
+        assert_eq!(b.full_text(), "a\r\nb\r\n");
     }
 
     #[test]

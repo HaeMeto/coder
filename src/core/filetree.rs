@@ -56,7 +56,13 @@ impl FileTree {
     /// state and already-loaded children of subdirectories that still exist, so
     /// refreshing a directory (a create/delete, or a live filesystem change)
     /// never collapses the tree beneath it.
+    ///
+    /// `dir`'s own expansion is left as it is, except on its *first* load: a
+    /// not-yet-loaded directory is only ever scanned because the user opened
+    /// it, so that scan also expands it. Later rescans (e.g. the filesystem
+    /// watcher) keep a collapsed directory collapsed.
     pub fn set_children(&mut self, dir: &Path, entries: Vec<(PathBuf, bool)>) {
+        let first_load = dir != self.root && !self.is_loaded(dir);
         // Pull out the current children so surviving subdirs can be carried over.
         let prev = if dir == self.root {
             self.children.take()
@@ -81,8 +87,10 @@ impl FileTree {
         if dir == self.root {
             self.children = Some(nodes);
         } else if let Some(node) = self.find_node_mut(dir) {
+            if first_load {
+                node.expanded = true;
+            }
             node.children = Some(nodes);
-            node.expanded = true;
         }
     }
 
@@ -200,6 +208,27 @@ mod tests {
         let paths: Vec<_> = t.visible_rows().into_iter().map(|r| r.path).collect();
         assert!(paths.contains(&PathBuf::from("/root/sub/a.rs")));
         assert!(paths.contains(&PathBuf::from("/root/new.rs")));
+    }
+
+    #[test]
+    fn rescan_keeps_a_collapsed_dir_collapsed() {
+        let mut t = FileTree::new(PathBuf::from("/root"));
+        let sub = PathBuf::from("/root/sub");
+        t.set_children(&PathBuf::from("/root"), vec![dir("/root/sub")]);
+        // First load (user opened it) expands.
+        t.set_children(&sub, vec![file("/root/sub/a.rs")]);
+        assert!(t.is_expanded(&sub));
+        t.collapse(&sub);
+        // A watcher rescan must not re-open it.
+        t.set_children(&sub, vec![file("/root/sub/a.rs"), file("/root/sub/b.rs")]);
+        assert!(!t.is_expanded(&sub));
+        assert!(t.is_loaded(&sub));
+        // An empty directory loaded, collapsed, then rescanned stays collapsed too.
+        t.expand(&sub);
+        t.set_children(&sub, vec![]);
+        t.collapse(&sub);
+        t.set_children(&sub, vec![]);
+        assert!(!t.is_expanded(&sub));
     }
 
     #[test]

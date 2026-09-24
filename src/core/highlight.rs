@@ -38,7 +38,30 @@ fn syntax_set() -> &'static SyntaxSet {
     })
 }
 
-/// Folders searched for extra `.sublime-syntax` files: user config, env override, repo assets.
+/// Bundled asset folders (`assets/<sub>`), located next to the executable — or,
+/// in a debug build, in the source checkout. Never relative to the current
+/// directory: coder is usually launched inside an arbitrary (possibly
+/// untrusted) project, whose own `assets/` must not inject syntaxes or themes.
+fn bundled_asset_dirs(sub: &str) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if cfg!(debug_assertions) {
+        dirs.push(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("assets")
+                .join(sub),
+        );
+    }
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|d| d.join("assets").join(sub)))
+        && !dirs.contains(&dir)
+    {
+        dirs.push(dir);
+    }
+    dirs
+}
+
+/// Folders searched for extra `.sublime-syntax` files: user config, env override, bundled assets.
 fn syntax_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Ok(home) = std::env::var("HOME") {
@@ -47,7 +70,7 @@ fn syntax_dirs() -> Vec<PathBuf> {
     if let Ok(d) = std::env::var("CODER_SYNTAXES_DIR") {
         dirs.push(PathBuf::from(d));
     }
-    dirs.push(PathBuf::from("assets/syntaxes"));
+    dirs.extend(bundled_asset_dirs("syntaxes"));
     dirs
 }
 
@@ -73,7 +96,7 @@ fn theme_set() -> &'static ThemeSet {
     })
 }
 
-/// Folders searched for .tmTheme files: user config, env override, repo assets.
+/// Folders searched for .tmTheme files: user config, env override, bundled assets.
 fn theme_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Ok(home) = std::env::var("HOME") {
@@ -82,7 +105,7 @@ fn theme_dirs() -> Vec<PathBuf> {
     if let Ok(d) = std::env::var("CODER_THEMES_DIR") {
         dirs.push(PathBuf::from(d));
     }
-    dirs.push(PathBuf::from("assets/themes"));
+    dirs.extend(bundled_asset_dirs("themes"));
     dirs
 }
 
@@ -436,8 +459,16 @@ fn highlight_line(
     // Hand syntect at most `MAX_HL_LINE` chars (split on a char boundary so both
     // halves stay valid UTF-8); the remainder is emitted uncolored. This bounds
     // per-line cost against O(n²) syntaxes.
+    let truncated;
     let (head, tail) = match line.char_indices().nth(MAX_HL_LINE) {
-        Some((i, _)) => (&line[..i], &line[i..]),
+        // The head still gets the line's newline: end-of-line rules (a `//`
+        // comment, an unterminated string) must close here exactly as they
+        // would on the full line, or their state leaks into the next lines.
+        Some((i, _)) => {
+            let newline = if line.ends_with('\n') { "\n" } else { "" };
+            truncated = format!("{}{newline}", &line[..i]);
+            (truncated.as_str(), &line[i..])
+        }
         None => (line, ""),
     };
     let ops = ps.parse_line(head, ss).unwrap_or_default();

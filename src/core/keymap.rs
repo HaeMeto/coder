@@ -107,6 +107,27 @@ pub enum Motion {
     WordRight,
 }
 
+/// A character typed through AltGr. Windows (and some terminals) report AltGr
+/// as Ctrl+Alt, so e.g. AltGr+Q on a German layout arrives as Ctrl+Alt+'@'.
+/// Only non-alphanumeric, visible chars count: Ctrl+Alt+<letter/digit> stays a
+/// shortcut (Ctrl+Alt+F = format). Callers consult this only after the user
+/// keybindings had no match, so an explicit binding still wins.
+pub fn altgr_char(key: &KeyEvent) -> Option<char> {
+    let m = key.modifiers;
+    match key.code {
+        KeyCode::Char(c)
+            if m.contains(KeyModifiers::CONTROL)
+                && m.contains(KeyModifiers::ALT)
+                && !c.is_ascii_alphanumeric()
+                && !c.is_control()
+                && !c.is_whitespace() =>
+        {
+            Some(c)
+        }
+        _ => None,
+    }
+}
+
 pub fn resolve(keys: &Keybindings, key: KeyEvent, focus: Focus, unlock: bool) -> Option<Action> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -166,6 +187,9 @@ fn resolve_editor(key: KeyEvent, ctrl: bool, shift: bool) -> Option<Action> {
     // Command shortcuts (copy/cut/paste/undo/format/move-line/…) are handled by
     // the user keybindings before we get here. What remains is the fixed set:
     // Ctrl+Left/Right word motion, plus typing / cursor motion / structural keys.
+    if let Some(c) = altgr_char(&key) {
+        return Some(Action::Insert(c));
+    }
     if ctrl {
         return match key.code {
             KeyCode::Left => Some(Action::Move(Motion::WordLeft, shift)),
@@ -278,4 +302,27 @@ fn resolve_terminal(key: KeyEvent, ctrl: bool, _shift: bool) -> Option<Action> {
         _ => return None,
     };
     Some(Action::PtyInput(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn altgr_symbols_are_text_but_ctrl_alt_letters_are_not() {
+        let ca = KeyModifiers::CONTROL | KeyModifiers::ALT;
+        assert_eq!(
+            altgr_char(&KeyEvent::new(KeyCode::Char('@'), ca)),
+            Some('@')
+        );
+        assert_eq!(
+            altgr_char(&KeyEvent::new(KeyCode::Char('€'), ca)),
+            Some('€')
+        );
+        assert_eq!(altgr_char(&KeyEvent::new(KeyCode::Char('f'), ca)), None);
+        assert_eq!(
+            altgr_char(&KeyEvent::new(KeyCode::Char('@'), KeyModifiers::CONTROL)),
+            None
+        );
+    }
 }

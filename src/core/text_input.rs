@@ -84,8 +84,15 @@ impl TextInputState {
         match key.code {
             // Ctrl+char / Alt+char are shortcuts (Save, panel switching, …) —
             // never text. Without the Alt case, Alt+2 would type "2" into this
-            // input instead of falling through to the panel shortcut.
-            KeyCode::Char(_) if ctrl || alt => Ignored,
+            // input instead of falling through to the panel shortcut. The
+            // exception is AltGr, which Windows reports as Ctrl+Alt.
+            KeyCode::Char(_) if ctrl || alt => match crate::core::keymap::altgr_char(&key) {
+                Some(c) => {
+                    self.insert_char(c);
+                    Changed
+                }
+                None => Ignored,
+            },
             KeyCode::Char(c) => {
                 self.insert_char(c);
                 Changed
@@ -143,13 +150,16 @@ impl TextInputState {
     /// a space so a multi-line paste still lands as one line instead of losing
     /// everything after the first newline.
     pub fn insert_paste(&mut self, text: &str, multiline: bool) {
-        for c in text.chars() {
-            match c {
-                '\r' => continue,
-                '\n' if !multiline => self.insert_char(' '),
-                c => self.insert_char(c),
-            }
-        }
+        let cleaned: String = text
+            .chars()
+            .filter(|&c| c != '\r')
+            .map(|c| if c == '\n' && !multiline { ' ' } else { c })
+            .collect();
+        // One byte-offset lookup and one splice, instead of a per-char insert
+        // that re-walks the string each time (quadratic on a large paste).
+        let b = self.byte_of(self.cursor);
+        self.content.insert_str(b, &cleaned);
+        self.cursor += cleaned.chars().count();
     }
 
     // ----- editing -----
