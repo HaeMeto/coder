@@ -224,30 +224,41 @@ pub(super) fn open_path(model: &mut Model, path: PathBuf) -> Vec<Cmd> {
     open_path_at(model, path, 0)
 }
 
-/// Opens the user config file as an editor tab, creating it (with the current
-/// defaults) first if it doesn't exist yet so there is always something to edit.
+/// Opens the user config file as an editor tab (see `config_file`).
 pub(super) fn open_config(model: &mut Model) -> Vec<Cmd> {
+    config_file(model).map_or_else(Vec::new, |p| open_path(model, p))
+}
+
+/// Opens the keybindings file as an editor tab (see `keybindings_file`). Bound
+/// to Alt+7 ("Shortcuts").
+pub(super) fn open_keybindings(model: &mut Model) -> Vec<Cmd> {
+    keybindings_file(model).map_or_else(Vec::new, |p| open_path(model, p))
+}
+
+/// The user config file, created (with the current defaults) first if it
+/// doesn't exist yet so there is always something to edit.
+pub(super) fn config_file(model: &mut Model) -> Option<PathBuf> {
     let Some(path) = crate::services::config::config_path() else {
         model.notify("No config path available".to_string());
-        return Vec::new();
+        return None;
     };
     if !path.exists() {
         crate::services::config::save(&model.config_snapshot());
     }
-    open_path(model, path)
+    Some(path)
 }
 
-/// Opens the keybindings file as an editor tab, seeding it with the current
-/// shortcuts first if it doesn't exist yet. Bound to Alt+7 ("Shortcuts").
-pub(super) fn open_keybindings(model: &mut Model) -> Vec<Cmd> {
+/// The keybindings file, seeded with the current shortcuts first if it
+/// doesn't exist yet.
+pub(super) fn keybindings_file(model: &mut Model) -> Option<PathBuf> {
     let Some(path) = crate::services::keybindings::keybindings_path() else {
         model.notify("No config path available".to_string());
-        return Vec::new();
+        return None;
     };
     if !path.exists() {
         crate::services::keybindings::save(&model.keybindings);
     }
-    open_path(model, path)
+    Some(path)
 }
 
 /// Runs the Settings panel's selected row: reset actions open a confirmation
@@ -404,7 +415,9 @@ pub(super) fn apply_reload(model: &mut Model, path: PathBuf, text: String) -> Ve
 /// Opens a file as a diff-mode tab (from the Git panel): reuses an existing diff
 /// tab for the path, otherwise loads a fresh one flagged via `pending_diff`.
 pub(super) fn open_diff(model: &mut Model, path: PathBuf) -> Vec<Cmd> {
+    cancel_preview(model, &PreviewKey::Diff(path.clone()));
     if let Some(i) = model.diff_tab_index_for(&path) {
+        model.tabs[i].preview = false;
         model.active_tab = Some(i);
         model.focus = Focus::Editor;
         ensure_cursor_visible(model);
@@ -418,7 +431,9 @@ pub(super) fn open_diff(model: &mut Model, path: PathBuf) -> Vec<Cmd> {
 /// the tab if it is already open, otherwise asks git for the patch (the tab is
 /// created when `Msg::CommitDiffLoaded` arrives).
 pub(super) fn open_commit_diff(model: &mut Model, hash: String) -> Vec<Cmd> {
+    cancel_preview(model, &PreviewKey::Commit(hash.clone()));
     if let Some(i) = model.commit_diff_tab_index(&hash) {
+        model.tabs[i].preview = false;
         model.active_tab = Some(i);
         model.focus = Focus::Editor;
         ensure_cursor_visible(model);
@@ -428,33 +443,136 @@ pub(super) fn open_commit_diff(model: &mut Model, hash: String) -> Vec<Cmd> {
 }
 
 /// Creates (or refreshes) the read-only diff tab holding a commit's changes.
+/// A `preview` load reuses the preview tab and leaves focus in the sidebar.
 pub(super) fn show_commit_diff(
     model: &mut Model,
     hash: &str,
     diff: &crate::services::git::CommitDiff,
-) {
-    let tab = Tab::commit_diff(hash, diff);
-    let i = match model.commit_diff_tab_index(hash) {
+    preview: bool,
+) -> Vec<Cmd> {
+    let mut tab = Tab::commit_diff(hash, diff);
+    let (i, cmds) = match model.commit_diff_tab_index(hash) {
         Some(i) => {
+            tab.preview = preview && model.tabs[i].preview;
             model.tabs[i] = tab;
-            i
+            (i, Vec::new())
         }
         None => {
-            model.tabs.push(tab);
-            model.tabs.len() - 1
+            tab.preview = preview;
+            place_tab(model, tab)
         }
     };
     model.active_tab = Some(i);
-    model.focus = Focus::Editor;
+    if !preview {
+        model.focus = Focus::Editor;
+    }
     // The green/red backgrounds come from the parent-vs-commit diff: it has to be
     // computed for the new tab before the first render.
     model.invalidate_highlight();
     model.mark_git_dirty();
     ensure_cursor_visible(model);
+    cmds
+}
+
+/// Adds a freshly loaded tab. A preview tab takes the place of the current
+/// (clean) preview tab instead of opening another one. Returns the tab's index
+/// and the LSP `didClose` for the file it displaced, if any.
+pub(super) fn place_tab(model: &mut Model, tab: Tab) -> (usize, Vec<Cmd>) {
+    let old = if tab.preview {
+        model.tabs.iter().position(|t| t.preview && !t.buffer.dirty)
+    } else {
+        None
+    };
+    let Some(i) = old else {
+        model.tabs.push(tab);
+        return (model.tabs.len() - 1, Vec::new());
+    };
+    let old_path = std::mem::replace(&mut model.tabs[i], tab).buffer.path;
+    model.invalidate_highlight();
+    let cmds = match old_path {
+        Some(p)
+            if !model
+                .tabs
+                .iter()
+                .any(|t| t.buffer.path.as_deref() == Some(p.as_path())) =>
+        {
+            super::lsp::did_close(model, &p)
+        }
+        _ => Vec::new(),
+    };
+    (i, cmds)
+}
+
+/// Previews `key` in the preview tab while the keyboard stays in the sidebar
+/// (arrow keys in the Files/Git panel). An already-open tab for it is just
+/// shown; otherwise the load is requested and tracked in `preview_loads`.
+pub(super) fn preview(model: &mut Model, key: PreviewKey) -> Vec<Cmd> {
+    let open = match &key {
+        PreviewKey::File(p) => model.tab_index_for(p),
+        PreviewKey::Diff(p) => model.diff_tab_index_for(p),
+        PreviewKey::Commit(h) => model.commit_diff_tab_index(h),
+    };
+    if let Some(i) = open {
+        model.pending_preview = None;
+        model.active_tab = Some(i);
+        ensure_cursor_visible(model);
+        return Vec::new();
+    }
+    let cmd = match &key {
+        PreviewKey::File(p) | PreviewKey::Diff(p) => Cmd::ReadFile(p.clone()),
+        PreviewKey::Commit(h) => Cmd::LoadCommitDiff(h.clone()),
+    };
+    *model.preview_loads.entry(key.clone()).or_insert(0) += 1;
+    model.pending_preview = Some(key);
+    vec![cmd]
+}
+
+/// A real open (Enter/click) of `key` while its preview load is still in
+/// flight: that load must not claim the tab, so it is dropped as stale and the
+/// open's own load creates a normal tab.
+fn cancel_preview(model: &mut Model, key: &PreviewKey) {
+    if model.pending_preview.as_ref() == Some(key) {
+        model.pending_preview = None;
+    }
+}
+
+/// How an arriving load relates to the preview machinery.
+pub(super) enum PreviewLoad {
+    /// Not a preview load: open it the normal way.
+    NotPreview,
+    /// A preview load the user has already arrowed past: discard it.
+    Stale,
+    /// The preview the user is currently on.
+    Current(PreviewKey),
+}
+
+/// Consumes one in-flight preview load matching `is_match`, reporting whether
+/// it is still the wanted preview.
+pub(super) fn take_preview_load(
+    model: &mut Model,
+    is_match: impl Fn(&PreviewKey) -> bool,
+) -> PreviewLoad {
+    let Some(key) = model.preview_loads.keys().find(|k| is_match(k)).cloned() else {
+        return PreviewLoad::NotPreview;
+    };
+    if let Some(n) = model.preview_loads.get_mut(&key) {
+        *n -= 1;
+        if *n == 0 {
+            model.preview_loads.remove(&key);
+        }
+    }
+    if model.pending_preview.as_ref() == Some(&key) {
+        model.pending_preview = None;
+        PreviewLoad::Current(key)
+    } else {
+        PreviewLoad::Stale
+    }
 }
 
 pub(super) fn open_path_at(model: &mut Model, path: PathBuf, line: usize) -> Vec<Cmd> {
+    cancel_preview(model, &PreviewKey::File(path.clone()));
     if let Some(i) = model.tab_index_for(&path) {
+        model.tabs[i].preview = false;
         model.active_tab = Some(i);
         model.focus = Focus::Editor;
         if line > 0 {
@@ -600,5 +718,77 @@ mod untitled_and_quit_tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+
+    fn load(model: &mut Model, path: &str) -> Vec<Cmd> {
+        super::super::update(
+            model,
+            Msg::FileLoaded {
+                path: PathBuf::from(path),
+                text: format!("{path}\n"),
+            },
+        )
+    }
+
+    #[test]
+    fn arrowing_through_files_reuses_one_preview_tab() {
+        let mut model = Model::new(std::env::temp_dir());
+        model.focus = Focus::Sidebar;
+        preview(&mut model, PreviewKey::File("/w/a.rs".into()));
+        load(&mut model, "/w/a.rs");
+        assert_eq!(model.tabs.len(), 1);
+        assert!(model.tabs[0].preview);
+        assert_eq!(
+            model.focus,
+            Focus::Sidebar,
+            "preview keeps the keyboard in the list"
+        );
+
+        preview(&mut model, PreviewKey::File("/w/b.rs".into()));
+        load(&mut model, "/w/b.rs");
+        assert_eq!(model.tabs.len(), 1, "the preview tab is replaced in place");
+        assert_eq!(
+            model.tabs[0].buffer.path.as_deref(),
+            Some(std::path::Path::new("/w/b.rs"))
+        );
+    }
+
+    #[test]
+    fn stale_preview_loads_are_dropped() {
+        let mut model = Model::new(std::env::temp_dir());
+        preview(&mut model, PreviewKey::File("/w/a.rs".into()));
+        preview(&mut model, PreviewKey::File("/w/b.rs".into()));
+        load(&mut model, "/w/a.rs"); // the user already moved past a.rs
+        assert!(model.tabs.is_empty());
+        load(&mut model, "/w/b.rs");
+        assert_eq!(model.tabs.len(), 1);
+        assert!(model.preview_loads.is_empty());
+    }
+
+    #[test]
+    fn opening_the_previewed_file_makes_it_permanent() {
+        let mut model = Model::new(std::env::temp_dir());
+        preview(&mut model, PreviewKey::File("/w/a.rs".into()));
+        load(&mut model, "/w/a.rs");
+        open_path(&mut model, "/w/a.rs".into());
+        assert!(!model.tabs[0].preview);
+        assert_eq!(model.focus, Focus::Editor);
+
+        preview(&mut model, PreviewKey::File("/w/b.rs".into()));
+        load(&mut model, "/w/b.rs");
+        assert_eq!(model.tabs.len(), 2, "a permanent tab is never replaced");
+    }
+
+    #[test]
+    fn git_preview_opens_a_diff_tab() {
+        let mut model = Model::new(std::env::temp_dir());
+        preview(&mut model, PreviewKey::Diff("/w/a.rs".into()));
+        load(&mut model, "/w/a.rs");
+        assert!(model.tabs[0].preview && model.tabs[0].diff_mode);
     }
 }

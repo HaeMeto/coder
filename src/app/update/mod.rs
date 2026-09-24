@@ -12,7 +12,7 @@ use ratatui::layout::Rect;
 use crate::app::cmd::Cmd;
 use crate::app::model::{
     ContextMenu, Dialog, DialogAction, DialogKind, DragTarget, FindField, Focus, GitZone, MenuItem,
-    Model, Panel, QuickbarItem, QuickbarState, SearchField, Tab,
+    Model, Panel, PreviewKey, QuickbarItem, QuickbarState, SearchField, Tab,
 };
 use crate::app::msg::Msg;
 use crate::core::buffer::{Buffer, Cursor};
@@ -219,8 +219,25 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
         Msg::FileLoaded { path, text } => {
             let buffer = Buffer::new(Some(path.clone()), &text);
             let mut tab = Tab::new(buffer);
+            // A preview load (arrow keys in the Files/Git panel): drop it when
+            // the user has already moved on, else it becomes the preview tab.
+            let preview = match take_preview_load(model, |p| match p {
+                PreviewKey::File(p) | PreviewKey::Diff(p) => *p == path,
+                PreviewKey::Commit(_) => false,
+            }) {
+                PreviewLoad::NotPreview => false,
+                PreviewLoad::Stale => return Vec::new(),
+                PreviewLoad::Current(key) => {
+                    if matches!(key, PreviewKey::Diff(_)) {
+                        tab.diff_mode = true;
+                        model.pending_diff_scroll = Some(path.clone());
+                    }
+                    true
+                }
+            };
+            tab.preview = preview;
             // A load requested from the Git panel becomes a diff-mode tab.
-            if model.pending_diff.as_deref() == Some(path.as_path()) {
+            if !preview && model.pending_diff.as_deref() == Some(path.as_path()) {
                 tab.diff_mode = true;
                 model.pending_diff = None;
                 // Scroll to the first change once HEAD text arrives (marks need it).
@@ -254,8 +271,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             }
             let is_restore = restore.is_some();
 
-            model.tabs.push(tab);
-            let idx = model.tabs.len() - 1;
+            let (idx, mut cmds) = place_tab(model, tab);
 
             // While a session restore is choosing which tab should end up
             // focused, only the matching load may claim `active_tab` —
@@ -267,7 +283,10 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
                 .is_some_and(|p| p != path.as_path());
             if !restoring_to_other {
                 model.active_tab = Some(idx);
-                model.focus = Focus::Editor;
+                // A preview keeps the keyboard in the sidebar list.
+                if !preview {
+                    model.focus = Focus::Editor;
+                }
                 if model.session_active_path.as_deref() == Some(path.as_path()) {
                     model.session_active_path = None;
                 }
@@ -288,7 +307,7 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             }
             // Load the HEAD content for the change gutter, and open the document
             // with its language server (if any).
-            let mut cmds = vec![Cmd::LoadHeadText(path)];
+            cmds.push(Cmd::LoadHeadText(path));
             cmds.extend(lsp::open_tab(model, idx));
             cmds
         }
@@ -312,8 +331,13 @@ pub fn update(model: &mut Model, msg: Msg) -> Vec<Cmd> {
             Vec::new()
         }
         Msg::CommitDiffLoaded { hash, diff } => {
-            show_commit_diff(model, &hash, &diff);
-            Vec::new()
+            let preview = match take_preview_load(model, |k| *k == PreviewKey::Commit(hash.clone()))
+            {
+                PreviewLoad::NotPreview => false,
+                PreviewLoad::Stale => return Vec::new(),
+                PreviewLoad::Current(_) => true,
+            };
+            show_commit_diff(model, &hash, &diff, preview)
         }
         Msg::HeadTextLoaded { path, text } => {
             // Update every open tab for this file (a normal tab and its diff tab).

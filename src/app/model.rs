@@ -199,6 +199,10 @@ pub struct Tab {
     /// has no path. `None` once the buffer is saved to a real path, and for
     /// every other kind of tab.
     pub untitled_id: Option<String>,
+    /// Preview tab (VSCode-style): opened by arrowing through the Files panel.
+    /// The next preview replaces it in place instead of opening another tab.
+    /// Cleared once the file is really opened (Enter/click) or edited.
+    pub preview: bool,
 }
 
 impl Tab {
@@ -212,6 +216,7 @@ impl Tab {
             read_only: false,
             commit_rows: Vec::new(),
             untitled_id: None,
+            preview: false,
         }
     }
 
@@ -281,6 +286,15 @@ fn tab_session_key(t: &Tab) -> Option<String> {
 }
 
 /// The active input field in the search panel.
+/// What a preview tab shows: a file (Files panel), a file's working-tree diff
+/// or a commit's patch (Git panel). Identifies an in-flight preview load.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum PreviewKey {
+    File(PathBuf),
+    Diff(PathBuf),
+    Commit(String),
+}
+
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SearchField {
     #[default]
@@ -874,6 +888,12 @@ pub struct Model {
     pub pending_goto: Option<(PathBuf, usize)>,
     /// A file whose next load should become a diff-mode tab (opened from the Git panel).
     pub pending_diff: Option<PathBuf>,
+    /// The entry the Files/Git panel's arrow keys last asked to preview; its
+    /// load becomes (or replaces) the preview tab.
+    pub pending_preview: Option<PreviewKey>,
+    /// Preview loads still in flight, counted per key. A load that arrives for
+    /// an entry the user has already arrowed past is dropped, not opened.
+    pub preview_loads: std::collections::HashMap<PreviewKey, usize>,
     /// A just-opened diff tab that should scroll to its first change once HEAD loads.
     pub pending_diff_scroll: Option<PathBuf>,
     /// The open modal dialog (captures all input when present).
@@ -1039,6 +1059,8 @@ impl Model {
             hl_reset: false,
             pending_goto: None,
             pending_diff: None,
+            pending_preview: None,
+            preview_loads: std::collections::HashMap::new(),
             pending_diff_scroll: None,
             dialog: None,
             context_menu: None,
@@ -1226,6 +1248,8 @@ impl Model {
         self.drag = None;
         self.pending_goto = None;
         self.pending_diff = None;
+        self.pending_preview = None;
+        self.preview_loads.clear();
         self.pending_diff_scroll = None;
 
         // Invalidate every cached render target.

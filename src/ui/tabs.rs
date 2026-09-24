@@ -84,6 +84,10 @@ pub fn render(frame: &mut Frame, area: Rect, model: &Model) {
         if active {
             style = style.add_modifier(Modifier::BOLD);
         }
+        // A preview tab (arrow-key browsing) is italic, like VSCode.
+        if tab.preview {
+            style = style.add_modifier(Modifier::ITALIC);
+        }
         let name = format!(" {} {} ", tab.title(), dirty);
         bottom.push(Span::styled(format!("{name:<w$}"), style));
         bottom.push(Span::styled("│", Style::new().fg(th.border).bg(bg)));

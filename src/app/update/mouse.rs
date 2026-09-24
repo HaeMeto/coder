@@ -245,10 +245,22 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
                 };
             }
             match ui::sidebar::file_hit(model, a.sidebar, x, y) {
+                // A folder toggles; a file is previewed and the keyboard stays
+                // in the tree (Enter/→ moves focus to the editor).
                 Some(FileHit::Row(idx)) => {
                     model.sidebar.files.selected = idx;
                     model.focus = Focus::Sidebar;
-                    activate_selection(model)
+                    let is_dir = model
+                        .sidebar
+                        .files
+                        .visible_rows()
+                        .get(idx)
+                        .is_some_and(|r| r.is_dir);
+                    if is_dir {
+                        activate_selection(model)
+                    } else {
+                        preview_selection(model)
+                    }
                 }
                 Some(FileHit::NewFile(idx)) => new_entry_dialog(model, idx, false),
                 Some(FileHit::NewFolder(idx)) => new_entry_dialog(model, idx, true),
@@ -262,10 +274,12 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
             // A click also moves the keyboard zone, so Tab continues from where
             // the mouse left off instead of from a stale zone.
             match ui::sidebar::git_hit(model, a.sidebar, x, y) {
+                // A click previews (like the arrow keys) and keeps the keyboard
+                // in the panel; Enter/→ is what moves focus to the editor.
                 Some(GitHit::Entry(idx)) => {
                     model.sidebar.git.selected = idx;
                     set_git_zone(model, GitZone::Files);
-                    activate_selection(model)
+                    preview_selection(model)
                 }
                 Some(GitHit::Stage(rel)) => {
                     set_git_zone(model, GitZone::Files);
@@ -303,10 +317,11 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
                     model.notify("Refreshing…".to_string());
                     vec![Cmd::LoadGitStatus]
                 }
-                // The file icon opens the plain file, not the diff view.
+                // The file icon opens the plain file, not the diff view (also
+                // as a preview, keyboard stays in the panel).
                 Some(GitHit::OpenFile(rel)) => {
                     set_git_zone(model, GitZone::Files);
-                    open_path(model, model.root.join(rel))
+                    preview(model, PreviewKey::File(model.root.join(rel)))
                 }
                 // The buttons share their enabled/disabled rules with the
                 // keyboard, so both routes go through `git_button`.
@@ -370,7 +385,7 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
                 Some(SearchHit::Result(idx)) => {
                     model.sidebar.search.selected = idx;
                     model.focus = Focus::Sidebar;
-                    return activate_selection(model);
+                    return preview_selection(model);
                 }
                 None => model.focus = Focus::Sidebar,
             }
@@ -388,7 +403,15 @@ fn sidebar_click(model: &mut Model, a: &ui::Areas, x: u16, y: u16) -> Vec<Cmd> {
             if let Some(i) = ui::sidebar::settings_row_at(a.sidebar, y) {
                 model.focus = Focus::Sidebar;
                 model.sidebar.settings_selected = i;
-                return activate_settings(model);
+                // An "Edit ..." row previews its file; the click keeps the
+                // keyboard in the panel (Enter opens it and focuses the editor).
+                use ui::sidebar::SettingsItem;
+                let file = match ui::sidebar::SETTINGS_ITEMS.get(i) {
+                    Some(SettingsItem::EditConfig) => config_file(model),
+                    Some(SettingsItem::EditKeybindings) => keybindings_file(model),
+                    _ => return activate_settings(model),
+                };
+                return file.map_or_else(Vec::new, |p| preview(model, PreviewKey::File(p)));
             }
             Vec::new()
         }

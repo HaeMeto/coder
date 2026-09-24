@@ -50,6 +50,10 @@ pub(super) fn mutate(model: &mut Model, f: impl FnOnce(&mut Buffer)) -> Vec<Cmd>
     if model.active_read_only() {
         return Vec::new();
     }
+    // Editing a preview tab keeps it: the next preview opens its own tab.
+    if let Some(i) = model.active_tab {
+        model.tabs[i].preview = false;
+    }
     edit(model, f)
 }
 

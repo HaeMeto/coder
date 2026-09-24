@@ -32,6 +32,61 @@ pub(super) fn nav(model: &mut Model, delta: isize) {
     }
 }
 
+/// Arrow-key / click preview: shows the selected Files entry (a file, not a
+/// folder), Git entry (a change's diff, or a commit's patch) or Search result
+/// (at its line) in the preview tab, keeping the keyboard in the list.
+pub(super) fn preview_selection(model: &mut Model) -> Vec<Cmd> {
+    let key = match model.sidebar.active {
+        Panel::Files => {
+            let rows = model.sidebar.files.visible_rows();
+            match rows.get(model.sidebar.files.selected) {
+                Some(row) if !row.is_dir => PreviewKey::File(row.path.clone()),
+                _ => return Vec::new(),
+            }
+        }
+        Panel::Git => {
+            let sel = model.sidebar.git.selected;
+            if let Some((entry, _)) = model.sidebar.git.entry_at(sel) {
+                PreviewKey::Diff(entry.path.clone())
+            } else if let Some(commit) = model.sidebar.git.commit_at(sel) {
+                PreviewKey::Commit(commit.hash.clone())
+            } else {
+                return Vec::new();
+            }
+        }
+        Panel::Search => {
+            let Some(m) = model
+                .sidebar
+                .search
+                .results
+                .get(model.sidebar.search.selected)
+            else {
+                return Vec::new();
+            };
+            let (path, line) = (m.path.clone(), m.line_no.saturating_sub(1));
+            return preview_at(model, path, line);
+        }
+        _ => return Vec::new(),
+    };
+    preview(model, key)
+}
+
+/// Previews a file with the cursor on `line` (a search result), centered.
+fn preview_at(model: &mut Model, path: PathBuf, line: usize) -> Vec<Cmd> {
+    let cmds = preview(model, PreviewKey::File(path.clone()));
+    if cmds.is_empty() {
+        // Already open: `preview` just switched to it.
+        if let Some(buf) = model.active_buffer_mut() {
+            buf.goto_line(line);
+        }
+        center_cursor_in_view(model);
+    } else {
+        // Applied by `Msg::FileLoaded` once the preview arrives.
+        model.pending_goto = Some((path, line));
+    }
+    cmds
+}
+
 fn move_index(cur: usize, delta: isize, len: usize) -> usize {
     if len == 0 {
         return 0;

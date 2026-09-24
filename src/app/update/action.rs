@@ -223,13 +223,18 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         {
             Vec::new()
         }
-        Action::NavUp => {
-            nav(model, -1);
-            post_nav_persist(model)
-        }
-        Action::NavDown => {
-            nav(model, 1);
-            post_nav_persist(model)
+        Action::NavUp | Action::NavDown => {
+            nav(
+                model,
+                if matches!(action, Action::NavUp) {
+                    -1
+                } else {
+                    1
+                },
+            );
+            let mut cmds = post_nav_persist(model);
+            cmds.extend(preview_selection(model));
+            cmds
         }
         // In the Git panel Enter presses whichever button holds the focus; on the
         // change list (and every other panel) it opens the selected row.
