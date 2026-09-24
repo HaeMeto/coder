@@ -64,6 +64,14 @@ pub(super) fn mouse(model: &mut Model, m: MouseEvent) -> Vec<Cmd> {
     if model.context_menu.is_some() {
         return menu_mouse(model, m);
     }
+    // The completion popup is keyboard-only: any click dismisses it (else it
+    // would follow the caret to the clicked spot), and drops a pending
+    // auto-trigger so it can't reopen there either.
+    if matches!(m.kind, MouseEventKind::Down(_)) {
+        model.completion = None;
+        model.lsp.completion_request = None;
+        model.cancel_autocomplete();
+    }
     handle_mouse(model, m)
 }
 

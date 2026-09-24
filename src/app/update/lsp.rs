@@ -196,7 +196,7 @@ pub(super) fn store_diagnostics(
 /// Requests completions at the cursor. First flushes the current text so the
 /// server completes against exactly what the user sees, then asks. Guarded by a
 /// `(tab, version)` token so a late response can be discarded.
-pub(super) fn request_completion(model: &Model) -> Vec<Cmd> {
+pub(super) fn request_completion(model: &mut Model) -> Vec<Cmd> {
     let Some(i) = model.active_tab else {
         return Vec::new();
     };
@@ -217,7 +217,8 @@ pub(super) fn request_completion(model: &Model) -> Vec<Cmd> {
     let line = buf.cursor.line as u32;
     let character = buf.char_col_to_utf16(buf.cursor.line, buf.cursor.col);
     let version = buf.version;
-    vec![
+    let token = (model.tabs[i].id, version);
+    let cmds = vec![
         Cmd::LspSend {
             to_server: handle.to_server.clone(),
             msg: LspClientMsg::DidChange {
@@ -232,10 +233,12 @@ pub(super) fn request_completion(model: &Model) -> Vec<Cmd> {
                 uri,
                 line,
                 character,
-                token: (model.tabs[i].id, version),
+                token,
             },
         },
-    ]
+    ];
+    model.lsp.completion_request = Some((token, buf.cursor));
+    cmds
 }
 
 /// Start of the identifier prefix before the cursor (the range a completion
@@ -310,6 +313,14 @@ pub(super) fn completions_arrived(
     token: lsp::Token,
     items: Vec<lsp::CompletionItem>,
 ) -> Vec<Cmd> {
+    // Only the latest request counts; `None` = dismissed while in flight.
+    let Some((req_token, req_cursor)) = model.lsp.completion_request else {
+        return Vec::new();
+    };
+    if req_token != token {
+        return Vec::new(); // a newer request is pending
+    }
+    model.lsp.completion_request = None;
     let Some(tab) = token_tab(model, token) else {
         return Vec::new(); // tab closed, or the buffer moved on
     };
@@ -317,6 +328,9 @@ pub(super) fn completions_arrived(
         return Vec::new(); // superseded by newer typing / a tab switch
     }
     let buf = &model.tabs[tab].buffer;
+    if buf.cursor != req_cursor {
+        return Vec::new(); // caret moved (click) without an edit
+    }
     let items = filter_items(items, &typed_prefix(buf));
     if items.is_empty() {
         model.completion = None;
@@ -353,6 +367,7 @@ pub(super) fn completion_key(model: &mut Model, key: KeyEvent) -> Option<Vec<Cmd
         }
         KeyCode::Esc => {
             model.completion = None;
+            model.lsp.completion_request = None; // a late response must not reopen it
             model.cancel_autocomplete(); // don't let a pending debounce reopen it
             Some(Vec::new())
         }
@@ -738,5 +753,40 @@ mod tests {
         let mut b = Buffer::new(None, "a😀b");
         apply_text_edits(&mut b, &[edit(0, 1, 0, 3, "X")]);
         assert_eq!(b.full_text(), "aXb");
+    }
+
+    fn model_with_request() -> (Model, lsp::Token) {
+        let mut model = Model::new(std::env::temp_dir());
+        let mut buf = Buffer::new(Some(std::path::PathBuf::from("/w/a.rs")), "foo.\nbar\n");
+        buf.set_cursor(Cursor { line: 0, col: 4 }, false);
+        model.tabs.push(crate::app::model::Tab::new(buf));
+        model.active_tab = Some(0);
+        let token = (model.tabs[0].id, model.tabs[0].buffer.version);
+        model.lsp.completion_request = Some((token, Cursor { line: 0, col: 4 }));
+        (model, token)
+    }
+
+    #[test]
+    fn response_opens_popup_at_requested_caret() {
+        let (mut model, token) = model_with_request();
+        completions_arrived(&mut model, token, vec![item("len", "a")]);
+        assert!(model.completion.is_some());
+    }
+
+    #[test]
+    fn late_response_after_caret_move_is_dropped() {
+        // A click moves the caret without bumping the buffer version.
+        let (mut model, token) = model_with_request();
+        model.tabs[0].buffer.set_cursor(Cursor { line: 1, col: 1 }, false);
+        completions_arrived(&mut model, token, vec![item("len", "a")]);
+        assert!(model.completion.is_none());
+    }
+
+    #[test]
+    fn response_after_dismiss_is_dropped() {
+        let (mut model, token) = model_with_request();
+        model.lsp.completion_request = None; // Esc / click while in flight
+        completions_arrived(&mut model, token, vec![item("len", "a")]);
+        assert!(model.completion.is_none());
     }
 }

@@ -14,6 +14,11 @@ pub struct LspState {
     pub starting: std::collections::HashSet<String>,
     /// Languages whose server finished the `initialize` handshake.
     pub initialized: std::collections::HashSet<String>,
+    /// The outstanding completion request: its token plus the caret it was
+    /// asked at. A response only opens the popup if both still match, so a
+    /// click (which moves the caret without bumping the buffer version) can't
+    /// land a late popup at the clicked spot.
+    pub completion_request: Option<(crate::services::lsp::Token, Cursor)>,
 }
 
 /// The open completion popup: items from the server plus selection + the range
