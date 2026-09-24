@@ -57,6 +57,10 @@ pub enum Action {
     /// `r`: revert the selected change back to its committed state.
     GitRevertEntry,
 
+    /// `←` in the Files panel: collapse the selected folder, or jump to the
+    /// parent folder's row.
+    CollapseOrParent,
+
     // File tree entry management (Files panel)
     NewFile,
     NewFolder,
@@ -202,6 +206,11 @@ fn resolve_sidebar(key: KeyEvent, ctrl: bool, _shift: bool) -> Option<Action> {
         KeyCode::Up => Some(Action::NavUp),
         KeyCode::Down => Some(Action::NavDown),
         KeyCode::Enter | KeyCode::Right => Some(Action::Activate),
+        KeyCode::Left => Some(Action::CollapseOrParent),
+        // Files panel letter shortcuts: new file / new folder next to the
+        // selected row. No-ops in the other panels (`on_selected_row`).
+        KeyCode::Char('f') if bare => Some(Action::NewFile),
+        KeyCode::Char('d') if bare => Some(Action::NewFolder),
         // Git panel letter shortcuts. They are no-ops in the other panels (see
         // `apply_action`), which have no letter keys of their own.
         KeyCode::Char('a') if bare => Some(Action::GitToggleStage),

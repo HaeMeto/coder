@@ -95,6 +95,30 @@ fn move_index(cur: usize, delta: isize, len: usize) -> usize {
     v as usize
 }
 
+/// `←` in the Files panel: collapse the selected folder when it is open,
+/// otherwise select its parent folder's row (like VSCode's explorer).
+pub(super) fn collapse_or_parent(model: &mut Model, idx: usize) -> Vec<Cmd> {
+    let rows = model.sidebar.files.visible_rows();
+    let Some(row) = rows.get(idx) else {
+        return Vec::new();
+    };
+    if row.is_dir && row.expanded {
+        let path = row.path.clone();
+        model.sidebar.files.collapse(&path);
+        return Vec::new();
+    }
+    let Some(parent) = row.path.parent() else {
+        return Vec::new();
+    };
+    match rows.iter().position(|r| r.path == parent) {
+        Some(p) => {
+            model.sidebar.files.selected = p;
+            Vec::new()
+        }
+        None => Vec::new(),
+    }
+}
+
 /// Activates the selected item via Enter/Right or a click.
 pub(super) fn activate_selection(model: &mut Model) -> Vec<Cmd> {
     match model.sidebar.active {

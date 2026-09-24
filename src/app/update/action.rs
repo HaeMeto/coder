@@ -277,6 +277,7 @@ pub(super) fn apply_action(model: &mut Model, action: Action) -> Vec<Cmd> {
         Action::NewFile => on_selected_row(model, |m, i| new_entry_dialog(m, i, false)),
         Action::NewFolder => on_selected_row(model, |m, i| new_entry_dialog(m, i, true)),
         Action::NewUntitledFile => new_untitled_tab(model),
+        Action::CollapseOrParent => on_selected_row(model, collapse_or_parent),
         Action::RenameEntry => on_selected_row(model, rename_dialog),
         Action::DeleteEntry => on_selected_row(model, delete_dialog),
 
