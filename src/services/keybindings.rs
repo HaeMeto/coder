@@ -580,15 +580,15 @@ pub fn to_toml(kb: &Keybindings) -> String {
     out
 }
 
-/// Writes the shortcuts to disk (creating the parent directory). Errors ignored.
-pub fn save(kb: &Keybindings) {
-    let Some(path) = keybindings_path() else {
-        return;
-    };
+/// Writes the shortcuts to disk (creating the parent directory).
+pub fn save(kb: &Keybindings) -> std::io::Result<()> {
+    let path = keybindings_path().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "no config path available")
+    })?;
     if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
     }
-    let _ = crate::services::fs::write_atomic(&path, to_toml(kb).as_bytes());
+    crate::services::fs::write_atomic(&path, to_toml(kb).as_bytes())
 }
 
 /// Loads the shortcuts, seeding the file with the defaults when it is missing so
@@ -603,7 +603,7 @@ pub fn load() -> Keybindings {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Keybindings::default(),
         Err(_) => {
             let kb = Keybindings::default();
-            save(&kb);
+            let _ = save(&kb);
             kb
         }
     }

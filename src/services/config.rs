@@ -124,13 +124,47 @@ pub fn seed() -> Config {
     }
 }
 
-/// Path of the config file: `$CODER_CONFIG` override, else `~/.config/coder/config.toml`.
+/// Path of the config file: `$CODER_CONFIG` override, else the platform's
+/// per-user configuration directory. On Windows, an existing Unix-style
+/// `~/.config/coder` directory is preferred so users keep files created by
+/// older builds; new installs use `%APPDATA%\\coder`.
 pub fn config_path() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("CODER_CONFIG") {
+    if let Some(p) = std::env::var_os("CODER_CONFIG") {
         return Some(PathBuf::from(p));
     }
-    let home = std::env::var("HOME").ok()?;
-    Some(PathBuf::from(home).join(".config/coder/config.toml"))
+
+    #[cfg(windows)]
+    {
+        // Older Windows builds used HOME when it was provided by the shell.
+        // Keep that location if either settings file already exists there.
+        for name in ["HOME", "USERPROFILE"] {
+            if let Some(home) = nonempty_env_path(name) {
+                let dir = home.join(".config").join("coder");
+                if dir.join("config.toml").is_file() || dir.join("keybindings.toml").is_file() {
+                    return Some(dir.join("config.toml"));
+                }
+            }
+        }
+
+        if let Some(appdata) = nonempty_env_path("APPDATA") {
+            return Some(appdata.join("coder").join("config.toml"));
+        }
+
+        // APPDATA is normally set by Windows, but USERPROFILE is a useful
+        // fallback for restricted shells and portable installations.
+        return nonempty_env_path("USERPROFILE")
+            .or_else(|| nonempty_env_path("HOME"))
+            .map(|home| home.join(".config").join("coder").join("config.toml"));
+    }
+
+    #[cfg(not(windows))]
+    nonempty_env_path("HOME").map(|home| home.join(".config/coder/config.toml"))
+}
+
+fn nonempty_env_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 /// Parses config text. Unknown scalar keys are ignored; every table becomes a
@@ -189,7 +223,10 @@ pub fn parse(text: &str) -> Config {
 /// costs the user their language sections.
 pub fn load_checked() -> (Config, Option<String>) {
     let Some(path) = config_path() else {
-        return (Config::default(), None);
+        return (
+            Config::default(),
+            Some("no config path available (set CODER_CONFIG or a home directory)".to_string()),
+        );
     };
     match std::fs::read_to_string(&path) {
         Ok(text) => match text.parse::<toml::Table>() {
@@ -201,8 +238,13 @@ pub fn load_checked() -> (Config, Option<String>) {
         },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let seed = seed();
-            save(&seed);
-            (seed, None)
+            match save(&seed) {
+                Ok(()) => (seed, None),
+                Err(e) => (
+                    seed,
+                    Some(format!("could not create {}: {e}", path.display())),
+                ),
+            }
         }
         Err(e) => (Config::default(), Some(format!("{}: {e}", path.display()))),
     }
@@ -243,24 +285,27 @@ pub fn to_toml(config: &Config) -> String {
     toml::to_string_pretty(&table).unwrap_or_default()
 }
 
-/// Writes the config to disk (creating the parent directory). Errors are ignored.
+/// Writes the config to disk (creating the parent directory).
 ///
 /// Never clobbers what it doesn't understand: when the existing file can't be
 /// read or isn't valid TOML (a hand-edit in progress), nothing is written; and
 /// top-level keys already in the file that `config` doesn't carry (a section
 /// that failed to parse as a language, a setting from a newer version) are
 /// kept as they are.
-pub fn save(config: &Config) {
-    let Some(path) = config_path() else {
-        return;
-    };
-    let Some(text) = merged_toml(config, &path) else {
-        return;
-    };
+pub fn save(config: &Config) -> std::io::Result<()> {
+    let path = config_path().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "no config path available")
+    })?;
+    let text = merged_toml(config, &path).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "config is unreadable or invalid TOML; refusing to overwrite it",
+        )
+    })?;
     if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
     }
-    let _ = crate::services::fs::write_atomic(&path, text.as_bytes());
+    crate::services::fs::write_atomic(&path, text.as_bytes())
 }
 
 /// The text [`save`] would write to `path`, or `None` if writing would destroy
