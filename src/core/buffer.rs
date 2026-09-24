@@ -1,5 +1,6 @@
 //! Rope-based text buffer: cursor, selection, undo/redo, dirty flag.
 
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -48,6 +49,8 @@ pub struct Buffer {
     /// highlighter stop as soon as the per-line parse state reconverges; a wide
     /// edit may have shifted lines, so the whole viewport tail is re-highlighted.
     dirty_wide: bool,
+    /// Cached longest source line; edits invalidate it through `version`.
+    max_line_len_cache: Cell<Option<(u64, usize)>>,
     undo_stack: Vec<Edit>,
     redo_stack: Vec<Edit>,
 }
@@ -65,6 +68,7 @@ impl Buffer {
             version: 0,
             dirty_from: 0,
             dirty_wide: false,
+            max_line_len_cache: Cell::new(None),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
         }
@@ -133,6 +137,21 @@ impl Buffer {
                 break;
             }
         }
+        len
+    }
+
+    /// Character length of the longest line, excluding line endings.
+    pub fn max_line_len(&self) -> usize {
+        if let Some((version, len)) = self.max_line_len_cache.get()
+            && version == self.version
+        {
+            return len;
+        }
+        let len = (0..self.line_count())
+            .map(|line| self.line_len(line))
+            .max()
+            .unwrap_or(0);
+        self.max_line_len_cache.set(Some((self.version, len)));
         len
     }
 
