@@ -22,8 +22,13 @@ const MIN_ACTION_WIDTH: usize = ROW_PREFIX_WIDTH + 1 + ACTION_COLS;
 /// new-file / new-folder buttons: indent + tree prefix + at least one name
 /// cell + the buttons. Shared by `render` and `file_hit`, so a button that is
 /// not drawn (deep indent, narrow sidebar) is never clickable either.
-fn dir_buttons_fit(width: usize, depth: usize) -> bool {
-    width >= MIN_ACTION_WIDTH && width >= 2 * depth + ROW_PREFIX_WIDTH + 1 + ACTION_COLS
+fn row_prefix_width(ascii_icons: bool) -> usize {
+    if ascii_icons { 2 } else { ROW_PREFIX_WIDTH }
+}
+
+fn dir_buttons_fit(width: usize, depth: usize, ascii_icons: bool) -> bool {
+    let prefix_width = row_prefix_width(ascii_icons);
+    width >= prefix_width + 1 + ACTION_COLS && width >= 2 * depth + prefix_width + 1 + ACTION_COLS
 }
 
 /// What a click in the file tree landed on.
@@ -73,8 +78,6 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
         } else {
             "  "
         };
-        let file_icon =
-            crate::core::icons::file(&row.name, row.is_dir, row.expanded, model.ascii_icons);
         let name_style = if row.is_dir {
             Style::new().fg(model.theme.fg)
         } else {
@@ -93,13 +96,17 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
         let mut spans = vec![
             Span::raw(indent.clone()),
             Span::styled(disclosure, Style::new().fg(model.theme.fg_dim)),
-            Span::styled(file_icon, Style::new().fg(model.theme.fg_dim)),
-            Span::raw(" "),
         ];
+        if !model.ascii_icons {
+            let file_icon = crate::core::icons::file(&row.name, row.is_dir, row.expanded);
+            spans.push(Span::styled(file_icon, Style::new().fg(model.theme.fg_dim)));
+            spans.push(Span::raw(" "));
+        }
         // Directories get "new file" / "new folder" buttons pinned to the right edge.
         let width = area.width as usize;
-        if row.is_dir && dir_buttons_fit(width, row.depth) {
-            let avail = width.saturating_sub(indent.len() + ROW_PREFIX_WIDTH + ACTION_COLS);
+        if row.is_dir && dir_buttons_fit(width, row.depth, model.ascii_icons) {
+            let avail = width
+                .saturating_sub(indent.len() + row_prefix_width(model.ascii_icons) + ACTION_COLS);
             let (new_file, new_folder) = action_icons(model);
             spans.push(Span::styled(
                 format!("{:<avail$}", fit_name(&row.name, avail)),
@@ -228,7 +235,7 @@ pub fn file_hit(model: &Model, area: Rect, x: u16, y: u16) -> Option<FileHit> {
     let width = body.width as usize;
     let col = x.saturating_sub(body.x) as usize;
 
-    if row.is_dir && dir_buttons_fit(width, row.depth) {
+    if row.is_dir && dir_buttons_fit(width, row.depth, model.ascii_icons) {
         // Exact glyph columns only (mirrors `render`): file at width-ACTION_COLS,
         // folder at width-2. Clicking the gap between them falls through to Row.
         if col == width - 2 {

@@ -10,22 +10,8 @@ const FOLDER: &str = "\u{ea83}";
 const FOLDER_OPEN: &str = "\u{eaf7}";
 const DOCKER: &str = "\u{e7b0}";
 
-/// Returns a one-cell file or folder icon. ASCII mode uses plain letters so
-/// tree names and the right-pinned directory actions remain aligned.
-pub fn file(name: &str, is_dir: bool, opened: bool, ascii: bool) -> &'static str {
-    if ascii {
-        if is_dir {
-            return "d";
-        }
-        return match kind(name) {
-            FileIconKind::Code | FileIconKind::Docker => "c",
-            FileIconKind::Text => "t",
-            FileIconKind::Media => "m",
-            FileIconKind::Pdf => "p",
-            FileIconKind::Archive => "z",
-            FileIconKind::Generic => "f",
-        };
-    }
+/// Returns a one-cell file or folder icon for the non-ASCII explorer view.
+pub fn file(name: &str, is_dir: bool, opened: bool) -> &'static str {
     if is_dir {
         return if opened { FOLDER_OPEN } else { FOLDER };
     }
