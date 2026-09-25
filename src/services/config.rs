@@ -150,11 +150,32 @@ pub fn config_path() -> Option<PathBuf> {
             return Some(appdata.join("coder").join("config.toml"));
         }
 
-        // APPDATA is normally set by Windows, but USERPROFILE is a useful
-        // fallback for restricted shells and portable installations.
-        return nonempty_env_path("USERPROFILE")
-            .or_else(|| nonempty_env_path("HOME"))
-            .map(|home| home.join(".config").join("coder").join("config.toml"));
+        // Some launchers omit APPDATA while still providing LOCALAPPDATA.
+        // Keep the files in the user's profile rather than failing to open them.
+        if let Some(local_appdata) = nonempty_env_path("LOCALAPPDATA") {
+            return Some(local_appdata.join("coder").join("config.toml"));
+        }
+
+        // USERPROFILE is usually set by Windows, but some launchers provide
+        // only LOCALAPPDATA or HOME.
+        if let Some(home) = nonempty_env_path("USERPROFILE").or_else(|| nonempty_env_path("HOME")) {
+            return Some(home.join(".config").join("coder").join("config.toml"));
+        }
+
+        // Last resort for restricted launch environments: Windows normally
+        // places the user's temp directory below AppData/Local/Temp. Recover
+        // the roaming config directory from that path when possible.
+        let temp = std::env::temp_dir();
+        if let Some(appdata) = temp.ancestors().find(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("AppData"))
+        }) {
+            return Some(appdata.join("Roaming").join("coder").join("config.toml"));
+        }
+
+        // Ensure config and keybindings remain available in portable/restricted
+        // environments whose temp directory is outside the user profile.
+        return Some(temp.join("coder").join("config.toml"));
     }
 
     #[cfg(not(windows))]
