@@ -13,7 +13,7 @@ use super::{content_rect, list_scroll, panel_area};
 /// Columns reserved at the right edge of a directory row for the
 /// "new file" / "new folder" buttons: `[icon][space][space][icon][space]`.
 const ACTION_COLS: usize = 5;
-/// Each row uses two disclosure cells, a file icon and a separating space.
+/// Non-ASCII rows use two disclosure cells, a file icon and a separating space.
 const ROW_PREFIX_WIDTH: usize = 4;
 /// Minimum width that can hold the prefix, one name cell, and action buttons.
 const MIN_ACTION_WIDTH: usize = ROW_PREFIX_WIDTH + 1 + ACTION_COLS;
@@ -45,10 +45,10 @@ pub enum FileHit {
     NewFolderRoot,
 }
 
-/// (new file, new folder) button glyphs — codicons, or ASCII when `CODER_ASCII` is set.
+/// (new file, new folder) button glyphs — codicons, or plus signs in ASCII mode.
 fn action_icons(model: &Model) -> (&'static str, &'static str) {
     if model.ascii_icons {
-        ("f", "d")
+        ("+", "+")
     } else {
         ("\u{ea7f}", "\u{ea80}") // new-file, new-folder
     }
@@ -68,13 +68,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, model: &Model) {
         let is_active = !row.is_dir && active_path.as_deref() == Some(row.path.as_path());
         let indent = "  ".repeat(row.depth);
         let disclosure = if row.is_dir {
-            if model.ascii_icons {
-                if row.expanded { "v " } else { "> " }
-            } else if row.expanded {
-                "▾ "
-            } else {
-                "▸ "
-            }
+            if row.expanded { "▾ " } else { "▸ " }
         } else {
             "  "
         };

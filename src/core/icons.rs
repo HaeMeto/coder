@@ -2,7 +2,7 @@
 
 const FILE: &str = "\u{ea7b}";
 const FILE_CODE: &str = "\u{eae9}";
-const FILE_TEXT: &str = "\u{ec5e}";
+const MARKDOWN: &str = "\u{eb1d}";
 const FILE_MEDIA: &str = "\u{eaea}";
 const FILE_PDF: &str = "\u{eaeb}";
 const FILE_ARCHIVE: &str = "\u{eaef}";
@@ -17,7 +17,8 @@ pub fn file(name: &str, is_dir: bool, opened: bool) -> &'static str {
     }
     match kind(name) {
         FileIconKind::Code => FILE_CODE,
-        FileIconKind::Text => FILE_TEXT,
+        FileIconKind::Markdown => MARKDOWN,
+        FileIconKind::Text => FILE,
         FileIconKind::Media => FILE_MEDIA,
         FileIconKind::Pdf => FILE_PDF,
         FileIconKind::Archive => FILE_ARCHIVE,
@@ -29,6 +30,7 @@ pub fn file(name: &str, is_dir: bool, opened: bool) -> &'static str {
 #[derive(Clone, Copy)]
 enum FileIconKind {
     Code,
+    Markdown,
     Text,
     Media,
     Pdf,
@@ -49,7 +51,8 @@ fn kind(name: &str) -> FileIconKind {
         | "cs" | "rb" | "php" | "swift" | "kt" | "kts" | "zig" | "lua" | "sh" | "fish" | "vim" => {
             FileIconKind::Code
         }
-        "md" | "markdown" | "txt" | "rst" | "adoc" | "log" => FileIconKind::Text,
+        "md" | "markdown" => FileIconKind::Markdown,
+        "txt" | "rst" | "adoc" | "log" => FileIconKind::Text,
         "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "bmp" | "ico" => FileIconKind::Media,
         "pdf" => FileIconKind::Pdf,
         "zip" | "tar" | "gz" | "bz2" | "xz" | "7z" => FileIconKind::Archive,
