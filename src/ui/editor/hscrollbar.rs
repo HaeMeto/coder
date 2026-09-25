@@ -8,6 +8,10 @@ use crate::app::model::Model;
 
 const MIN_THUMB_WIDTH: usize = 5;
 
+fn scrollbar_symbols(ascii: bool) -> (&'static str, &'static str) {
+    if ascii { ("-", "=") } else { ("─", "▬") }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct HorizontalScrollMetrics {
     pub thumb_start: usize,
@@ -78,8 +82,7 @@ pub(crate) fn render_hscrollbar(frame: &mut Frame, area: Rect, model: &Model) {
         buf.scroll_x,
         track_len,
     );
-    let track = if model.ascii_icons { "." } else { "─" };
-    let thumb = if model.ascii_icons { "#" } else { "▬" };
+    let (track, thumb) = scrollbar_symbols(model.ascii_icons);
     let cells = frame.buffer_mut();
     for col in 0..track_len {
         let in_thumb = col >= metrics.thumb_start
@@ -96,5 +99,20 @@ pub(crate) fn render_hscrollbar(frame: &mut Frame, area: Rect, model: &Model) {
             };
             cell.set_style(style);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scrollbar_symbols;
+
+    #[test]
+    fn ascii_scrollbar_has_distinct_non_hash_track_and_thumb() {
+        assert_eq!(scrollbar_symbols(true), ("-", "="));
+    }
+
+    #[test]
+    fn unicode_scrollbar_keeps_existing_symbols() {
+        assert_eq!(scrollbar_symbols(false), ("─", "▬"));
     }
 }
