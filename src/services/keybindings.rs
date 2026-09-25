@@ -487,6 +487,30 @@ impl Keybindings {
             })
     }
 
+    /// Returns the active, human-readable shortcut for a command.
+    pub fn shortcut(&self, binding: Bindable) -> String {
+        let Some((_, chord, locked)) = self.binds.iter().find(|(b, _, _)| *b == binding) else {
+            return String::new();
+        };
+        let label = chord
+            .to_chord_string()
+            .split('+')
+            .map(|part| {
+                let mut chars = part.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("+");
+        if *locked {
+            format!("Leader + {label}")
+        } else {
+            label
+        }
+    }
+
     fn set(&mut self, b: Bindable, chord: Chord, locked: Option<bool>) {
         let default_locked = b.default_locked();
         if let Some(entry) = self.binds.iter_mut().find(|(x, _, _)| *x == b) {
